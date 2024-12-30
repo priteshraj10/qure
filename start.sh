@@ -22,135 +22,51 @@ handle_error() {
     exit 1
 }
 
-# Function to check if a Python package is installed
-package_installed() {
-    python3 -c "import $1" 2>/dev/null
-    return $?
-}
-
-# Function to detect OS
-detect_os() {
-    case "$(uname -s)" in
-        Linux*)     echo "linux";;
-        Darwin*)    echo "macos";;
-        MINGW*|MSYS*|CYGWIN*) echo "windows";;
-        *)          echo "unknown";;
-    esac
-}
-
-# Function to detect CPU architecture
-detect_arch() {
-    case "$(uname -m)" in
-        x86_64*)    echo "x86_64";;
-        arm64*)     echo "arm64";;
-        aarch64*)   echo "arm64";;
-        *)          echo "unknown";;
-    esac
-}
-
-# Function to install PyTorch based on OS and architecture
-install_pytorch() {
-    local os_type=$1
-    local arch_type=$2
-    local gpu_type=$3
+# Function to install Python dependencies
+install_python_dependencies() {
+    print_step "Installing required Python packages..."
     
-    print_step "Installing PyTorch for $os_type ($arch_type) with $gpu_type support..."
+    # Core dependencies first
+    print_step "Installing core dependencies..."
+    python -m pip install --upgrade pip setuptools wheel || handle_error "Failed to upgrade pip and core tools"
     
-    case "$os_type" in
-        "macos")
-            if [ "$arch_type" = "arm64" ]; then
-                python -m pip install torch torchvision torchaudio || handle_error "Failed to install PyTorch for M1/M2 Mac"
-            else
-                python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || handle_error "Failed to install PyTorch for Intel Mac"
-            fi
-            ;;
-        "linux")
-            if [ "$gpu_type" = "ampere" ] || [ "$gpu_type" = "older" ]; then
-                python -m pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || handle_error "Failed to install PyTorch with CUDA support"
-            else
-                python -m pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || handle_error "Failed to install PyTorch for CPU"
-            fi
-            ;;
-        "windows")
-            if [ "$gpu_type" = "ampere" ] || [ "$gpu_type" = "older" ]; then
-                python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || handle_error "Failed to install PyTorch with CUDA support"
-            else
-                python -m pip install torch torchvision torchaudio || handle_error "Failed to install PyTorch for CPU"
-            fi
-            ;;
-        *)
-            handle_error "Unsupported operating system"
-            ;;
-    esac
+    # Install transformers and related packages
+    print_step "Installing Hugging Face Transformers..."
+    python -m pip install \
+        transformers==4.37.2 \
+        tokenizers==0.15.1 \
+        accelerate==0.27.1 \
+        safetensors==0.4.2 || handle_error "Failed to install transformers and related packages"
+    
+    # Install web framework dependencies
+    print_step "Installing web dependencies..."
+    python -m pip install \
+        "fastapi[all]>=0.68.0" \
+        "uvicorn[standard]>=0.15.0" \
+        python-multipart>=0.0.5 \
+        pydantic>=1.8.2 || handle_error "Failed to install web dependencies"
+    
+    # Install utility packages
+    print_step "Installing utility packages..."
+    python -m pip install \
+        numpy>=1.21.0 \
+        pandas>=1.3.0 \
+        tqdm>=4.65.0 \
+        requests>=2.26.0 \
+        pyyaml>=5.4.1 || handle_error "Failed to install utility packages"
 }
-
-# Function to install Unsloth based on GPU type
-install_unsloth() {
-    local gpu_type=$1
-    
-    print_step "Installing Unsloth with appropriate optimizations..."
-    
-    case "$gpu_type" in
-        "ampere")
-            python -m pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
-            python -m pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes || handle_error "Failed to install Unsloth dependencies"
-            ;;
-        "older")
-            python -m pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
-            python -m pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes || handle_error "Failed to install Unsloth dependencies"
-            ;;
-        *)
-            python -m pip install "unsloth @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
-            ;;
-    esac
-}
-
-# Detect system information
-OS_TYPE=$(detect_os)
-ARCH_TYPE=$(detect_arch)
-print_step "Detected OS: $OS_TYPE ($ARCH_TYPE)"
-
-# Check for required commands
-print_step "Checking system dependencies..."
 
 # Check for Python
 if ! command_exists python3 && ! command_exists python; then
-    case $OS_TYPE in
-        "linux")
-            echo "Python is not installed. Please install Python 3.10 or higher:"
-            echo "For Ubuntu/Debian: sudo apt-get install python3"
-            echo "For Fedora: sudo dnf install python3"
-            echo "For other distributions, visit: https://www.python.org/downloads/"
-            ;;
-        "macos")
-            echo "Python is not installed. Please install Python 3.10 or higher:"
-            echo "Visit: https://www.python.org/downloads/"
-            ;;
-        "windows")
-            echo "Python is not installed. Please install Python 3.10 or higher:"
-            echo "Visit: https://www.python.org/downloads/"
-            ;;
-    esac
+    echo "Python is not installed. Please install Python 3.10 or higher:"
+    echo "Visit: https://www.python.org/downloads/"
     exit 1
 fi
 
 # Check for npm/Node.js
 if ! command_exists npm; then
-    case $OS_TYPE in
-        "linux")
-            echo "Node.js/npm is not installed. Please install Node.js 16 or higher:"
-            echo "Visit: https://nodejs.org/en/download/"
-            echo "Or use your distribution's package manager"
-            ;;
-        "macos")
-            echo "Node.js/npm is not installed. Please install Node.js 16 or higher:"
-            echo "Visit: https://nodejs.org/en/download/"
-            ;;
-        "windows")
-            echo "Node.js/npm is not installed. Please install Node.js 16 or higher:"
-            echo "Visit: https://nodejs.org/en/download/"
-            ;;
-    esac
+    echo "Node.js/npm is not installed. Please install Node.js 16 or higher:"
+    echo "Visit: https://nodejs.org/en/download/"
     exit 1
 fi
 
@@ -158,64 +74,68 @@ fi
 print_step "Setting up Python virtual environment..."
 cd backend || handle_error "Backend directory not found"
 
-# Create virtual environment based on OS
-if [ "$OS_TYPE" = "windows" ]; then
-    PYTHON_CMD="python"
-    VENV_ACTIVATE="venv/Scripts/activate"
-else
-    PYTHON_CMD="python3"
-    VENV_ACTIVATE="venv/bin/activate"
-fi
-
+# Create virtual environment
 if [ ! -d "venv" ]; then
     print_step "Creating new virtual environment..."
-    $PYTHON_CMD -m venv venv || handle_error "Failed to create virtual environment"
+    python3 -m venv venv || handle_error "Failed to create virtual environment"
 fi
 
 # Activate virtual environment
 print_step "Activating virtual environment..."
-source "$VENV_ACTIVATE" || handle_error "Failed to activate virtual environment"
+source venv/bin/activate || handle_error "Failed to activate virtual environment"
 
-# Upgrade pip first
-print_step "Upgrading pip..."
-python -m pip install --upgrade pip || handle_error "Failed to upgrade pip"
+# Install base dependencies
+install_python_dependencies
 
-# Detect GPU type
-GPU_TYPE=$(detect_gpu)
-print_step "Detected GPU type: $GPU_TYPE"
-
-# Install PyTorch based on system configuration
-install_pytorch "$OS_TYPE" "$ARCH_TYPE" "$GPU_TYPE"
-
-# Install Unsloth based on GPU type
-install_unsloth "$GPU_TYPE"
-
-# Install web dependencies
-print_step "Installing web dependencies..."
-if ! package_installed "fastapi"; then
-    python -m pip install "fastapi[all]" python-multipart || handle_error "Failed to install web dependencies"
+# Run system check script
+print_step "Checking system configuration..."
+SYSTEM_INFO=$(python system_check.py)
+if [ $? -ne 0 ]; then
+    handle_error "Failed to check system configuration"
 fi
 
-# Verify installations
-print_step "Verifying installations..."
+# Parse system info
+PYTORCH_INSTALL_TYPE=$(echo $SYSTEM_INFO | python -c "import sys, json; print(json.load(sys.stdin)['pytorch_install_type'])")
+PYTORCH_COMMAND=$(echo $SYSTEM_INFO | python -c "import sys, json; print(json.load(sys.stdin)['install_commands']['pytorch'])")
+EXTRA_COMMANDS=$(echo $SYSTEM_INFO | python -c "import sys, json; print('\n'.join(json.load(sys.stdin)['install_commands']['extras']))")
+
+# Install PyTorch based on system configuration
+print_step "Installing PyTorch for $PYTORCH_INSTALL_TYPE..."
+eval "$PYTORCH_COMMAND" || handle_error "Failed to install PyTorch"
+
+# Install extra dependencies
+if [ ! -z "$EXTRA_COMMANDS" ]; then
+    print_step "Installing additional dependencies..."
+    while IFS= read -r cmd; do
+        eval "$cmd" || handle_error "Failed to install additional dependencies"
+    done <<< "$EXTRA_COMMANDS"
+fi
+
+# Verify PyTorch installation
+print_step "Verifying PyTorch installation..."
 python -c "import torch; print(f'PyTorch version: {torch.__version__}')" || handle_error "PyTorch installation verification failed"
 python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" || print_step "CUDA not available"
 
-if [ "$GPU_TYPE" != "cpu" ]; then
-    if command_exists nvcc; then
-        nvcc --version
-    fi
-    python -m xformers.info || print_step "xformers verification skipped"
-    python -m bitsandbytes || print_step "bitsandbytes verification skipped"
-fi
+# Verify all critical dependencies
+print_step "Verifying critical dependencies..."
+python -c "
+import sys
+required_packages = ['torch', 'transformers', 'fastapi', 'uvicorn', 'pydantic']
+missing_packages = []
+for package in required_packages:
+    try:
+        __import__(package)
+        print(f'✓ {package} installed successfully')
+    except ImportError as e:
+        missing_packages.append(package)
+        print(f'✗ {package} not found')
+if missing_packages:
+    sys.exit(1)
+" || handle_error "Critical dependencies missing: ${missing_packages[*]}"
 
 # Start backend server
 print_step "Starting backend server..."
-if [ "$OS_TYPE" = "windows" ]; then
-    python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 > backend.log 2>&1 &
-else
-    python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
-fi
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 
 # Verify backend server started
@@ -226,8 +146,6 @@ for i in {1..60}; do
         break
     fi
     if ! kill -0 $BACKEND_PID 2>/dev/null; then
-        print_step "Backend server failed to start. Server logs:"
-        cat backend.log
         handle_error "Backend server failed to start"
     fi
     sleep 1
@@ -252,11 +170,7 @@ if [ ! -d ".next" ]; then
 fi
 
 print_step "Starting frontend server..."
-if [ "$OS_TYPE" = "windows" ]; then
-    cmd //c "npm start"
-else
-    npm start
-fi
+npm start
 
 # Cleanup
 print_step "Cleaning up..."

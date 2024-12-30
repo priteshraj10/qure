@@ -1,7 +1,5 @@
 from typing import Dict, List, Optional, Union
-import torch
-from .model import MedicalLLM
-from transformers import AutoTokenizer
+import sys
 import logging
 import platform
 import subprocess
@@ -9,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+# Configure logging first
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -18,6 +17,41 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Function to check required dependencies
+def check_dependencies():
+    required_packages = {
+        'torch': 'PyTorch is required for model operations',
+        'transformers': 'Hugging Face Transformers is required for model loading',
+        'tokenizers': 'Tokenizers is required for text processing',
+        'accelerate': 'Accelerate is required for model optimization',
+        'safetensors': 'Safetensors is required for model weights handling'
+    }
+    
+    missing_packages = []
+    for package, description in required_packages.items():
+        try:
+            __import__(package)
+        except ImportError:
+            missing_packages.append(f"{package} - {description}")
+    
+    if missing_packages:
+        error_msg = "Missing required dependencies:\n" + "\n".join(missing_packages)
+        logger.error(error_msg)
+        raise ImportError(error_msg)
+
+# Check dependencies before importing
+check_dependencies()
+
+# Now import the required packages
+import torch
+from transformers import AutoTokenizer
+try:
+    from .model import MedicalLLM
+except ImportError as e:
+    logger.error(f"Failed to import MedicalLLM: {str(e)}")
+    logger.error("Please ensure the model.py file is present in the training directory")
+    raise
 
 class SystemInfo:
     def __init__(self):
