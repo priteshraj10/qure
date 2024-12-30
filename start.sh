@@ -28,6 +28,22 @@ package_installed() {
     return $?
 }
 
+# Function to detect GPU and CUDA
+detect_gpu() {
+    if command_exists nvidia-smi; then
+        GPU_INFO=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)
+        if [[ $GPU_INFO == *"RTX 30"* ]] || [[ $GPU_INFO == *"RTX 40"* ]] || [[ $GPU_INFO == *"A100"* ]] || [[ $GPU_INFO == *"H100"* ]]; then
+            echo "ampere"
+        else
+            echo "older"
+        fi
+    elif [[ $(uname -m) == 'arm64' ]]; then
+        echo "apple_silicon"
+    else
+        echo "cpu"
+    fi
+}
+
 # Check for required commands and install if missing
 print_step "Checking system dependencies..."
 if ! command_exists brew; then
@@ -63,60 +79,45 @@ source venv/bin/activate || handle_error "Failed to activate virtual environment
 
 # Upgrade pip first
 print_step "Checking pip version..."
-if python3 -m pip list | grep -q "pip.*24."; then
-    print_step "Pip is up to date"
+python3 -m pip install --upgrade pip || handle_error "Failed to upgrade pip"
+
+# Detect GPU type and install appropriate PyTorch version
+GPU_TYPE=$(detect_gpu)
+print_step "Detected GPU type: $GPU_TYPE"
+
+if [ "$GPU_TYPE" = "ampere" ]; then
+    print_step "Installing PyTorch for Ampere GPU..."
+    python3 -m pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || handle_error "Failed to install PyTorch"
+    print_step "Installing Unsloth with Ampere optimizations..."
+    python3 -m pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
+    python3 -m pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes || handle_error "Failed to install dependencies"
+elif [ "$GPU_TYPE" = "older" ]; then
+    print_step "Installing PyTorch for older NVIDIA GPU..."
+    python3 -m pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || handle_error "Failed to install PyTorch"
+    print_step "Installing Unsloth for older GPUs..."
+    python3 -m pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
+    python3 -m pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes || handle_error "Failed to install dependencies"
 else
-    print_step "Upgrading pip..."
-    python3 -m pip install --upgrade pip || handle_error "Failed to upgrade pip"
+    print_step "Installing PyTorch for CPU/Apple Silicon..."
+    python3 -m pip install torch torchvision torchaudio || handle_error "Failed to install PyTorch"
+    print_step "Installing Unsloth without GPU optimizations..."
+    python3 -m pip install "unsloth @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
 fi
 
-# Install PyTorch if not present
-print_step "Checking PyTorch installation..."
-if ! package_installed "torch"; then
-    print_step "Installing PyTorch for your system..."
-    if [[ $(uname -m) == 'arm64' ]]; then
-        print_step "Detected Apple Silicon (M1/M2), installing PyTorch with MPS support..."
-        python3 -m pip install torch torchvision torchaudio || handle_error "Failed to install PyTorch"
-    else
-        print_step "Installing PyTorch for Intel Mac..."
-        python3 -m pip install torch torchvision torchaudio || handle_error "Failed to install PyTorch"
-    fi
-else
-    print_step "PyTorch is already installed"
-fi
-
-# Check and install core ML dependencies
-print_step "Checking core ML dependencies..."
-MISSING_DEPS=()
-for pkg in "transformers" "datasets" "accelerate" "bitsandbytes" "tqdm" "peft"; do
-    if ! package_installed $pkg; then
-        MISSING_DEPS+=($pkg)
-    fi
-done
-
-if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
-    print_step "Installing missing ML dependencies: ${MISSING_DEPS[*]}"
-    python3 -m pip install ${MISSING_DEPS[@]} || handle_error "Failed to install core ML dependencies"
-else
-    print_step "All core ML dependencies are installed"
-fi
-
-# Check and install unsloth
-print_step "Checking unsloth installation..."
-if ! package_installed "unsloth"; then
-    print_step "Installing unsloth..."
-    python3 -m pip install "unsloth @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install unsloth"
-else
-    print_step "Unsloth is already installed"
-fi
-
-# Check and install web dependencies
-print_step "Checking web dependencies..."
+# Install web dependencies
+print_step "Installing web dependencies..."
 if ! package_installed "fastapi"; then
-    print_step "Installing web dependencies..."
     python3 -m pip install "fastapi[all]" python-multipart || handle_error "Failed to install web dependencies"
-else
-    print_step "Web dependencies are already installed"
+fi
+
+# Verify installations
+print_step "Verifying installations..."
+if [ "$GPU_TYPE" != "apple_silicon" ] && [ "$GPU_TYPE" != "cpu" ]; then
+    if command_exists nvcc; then
+        nvcc --version
+    fi
+    python3 -m xformers.info || print_step "xformers verification skipped"
+    python3 -m bitsandbytes || print_step "bitsandbytes verification skipped"
 fi
 
 # Start backend server
@@ -124,7 +125,7 @@ print_step "Starting backend server..."
 python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 
-# Verify backend server started (give it more time to start)
+# Verify backend server started
 print_step "Waiting for backend server to start..."
 for i in {1..60}; do
     if curl -s http://localhost:8000/docs >/dev/null 2>&1; then
@@ -132,7 +133,6 @@ for i in {1..60}; do
         break
     fi
     if ! kill -0 $BACKEND_PID 2>/dev/null; then
-        # If server failed, print the logs
         print_step "Backend server failed to start. Server logs:"
         cat backend.log
         handle_error "Backend server failed to start"
@@ -144,30 +144,24 @@ for i in {1..60}; do
     echo -n "."
 done
 
-# Install and build frontend
+# Frontend setup
 print_step "Setting up frontend..."
 cd ../frontend
 
-# Check if node_modules exists
 if [ ! -d "node_modules" ]; then
     print_step "Installing frontend dependencies..."
     npm install || handle_error "Failed to install frontend dependencies"
-else
-    print_step "Frontend dependencies are already installed"
 fi
 
-# Check if .next directory exists
 if [ ! -d ".next" ]; then
     print_step "Building frontend..."
     npm run build || handle_error "Failed to build frontend"
-else
-    print_step "Frontend is already built"
 fi
 
 print_step "Starting frontend server..."
 npm start
 
-# When frontend is terminated, also terminate the backend and cleanup
+# Cleanup
 print_step "Cleaning up..."
 kill $BACKEND_PID 2>/dev/null
 deactivate 

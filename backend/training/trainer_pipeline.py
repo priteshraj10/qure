@@ -1,156 +1,254 @@
+from typing import Dict, List, Optional, Union
 import torch
-from torch.cuda.amp import autocast, GradScaler
-import logging
-from tqdm import tqdm
 from .model import MedicalLLM
-from .config import TrainingConfig
-from .data_loader import create_dataloaders
-from .events import TrainingEventEmitter
+from transformers import AutoTokenizer
+import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TrainingPipeline:
-    def __init__(self, config: TrainingConfig):
-        self.config = config
-        self.device = torch.device(config.device)
-        self.model = MedicalLLM(config)
-        self.scaler = GradScaler() if config.mixed_precision else None
+    def __init__(self):
+        self.version = "2.0.0"
+        self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        logger.info(f"Using device: {self.device}")
         
-        # Initialize optimizer
-        self.optimizer = torch.optim.AdamW(
-            self.model.model.parameters(),
-            lr=config.learning_rate,
-            weight_decay=0.01
-        )
+        # Initialize model and tokenizer
+        self.model = MedicalLLM.from_pretrained("qure-ai/medical-model-v2")
+        self.tokenizer = AutoTokenizer.from_pretrained("qure-ai/medical-model-v2")
         
-        # Get dataloaders
-        self.train_loader, self.val_loader = create_dataloaders(config)
+        # Move model to appropriate device
+        self.model.to(self.device)
+        self.model.eval()
 
-    async def train(self, event_emitter: TrainingEventEmitter):
+    def process_query(
+        self,
+        query: str,
+        confidence_threshold: float = 0.85,
+        context: Optional[Dict] = None
+    ) -> Dict:
+        """Process a medical query and return response with confidence scores"""
         try:
-            logger.info("Starting training pipeline...")
-            best_val_loss = float('inf')
+            # Prepare input
+            inputs = self.tokenizer(
+                query,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=512
+            ).to(self.device)
+
+            # Add context if provided
+            if context:
+                inputs["context"] = context
+
+            # Generate response
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_length=1024,
+                    num_return_sequences=1,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9
+                )
+
+            # Decode response
+            response_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            for epoch in range(self.config.num_epochs):
-                # Training phase
-                train_metrics = await self._train_epoch(epoch, event_emitter)
-                
-                # Validation phase
-                val_metrics = await self._validate_epoch(epoch)
-                
-                # Combine metrics
-                metrics = {
-                    "epoch": epoch,
-                    "step": epoch * len(self.train_loader),
-                    "totalSteps": self.config.num_epochs * len(self.train_loader),
-                    "loss": train_metrics["loss"],
-                    "accuracy": train_metrics["accuracy"],
-                    "validationLoss": val_metrics["loss"],
-                    "validationAccuracy": val_metrics["accuracy"],
-                    "learningRate": self.optimizer.param_groups[0]["lr"]
+            # Get confidence scores
+            confidence = self.model.get_confidence(outputs)
+
+            # Filter based on confidence threshold
+            if confidence < confidence_threshold:
+                return {
+                    "status": "low_confidence",
+                    "message": "Response confidence below threshold",
+                    "confidence": confidence
                 }
-                
-                # Emit metrics
-                await event_emitter.emit_metrics(metrics)
-                
-                # Save best model
-                if val_metrics["loss"] < best_val_loss:
-                    best_val_loss = val_metrics["loss"]
-                    self._save_checkpoint(epoch, val_metrics["loss"])
-                
-                logger.info(f"Epoch {epoch + 1}/{self.config.num_epochs} completed")
-            
-            await event_emitter.emit_status("completed", {"message": "Training completed successfully"})
-            
+
+            return {
+                "status": "success",
+                "response": response_text,
+                "confidence": confidence,
+                "references": self.model.get_references(response_text)
+            }
+
         except Exception as e:
-            logger.error(f"Training failed: {str(e)}")
-            await event_emitter.emit_status("error", {"error": str(e)})
+            logger.error(f"Error processing query: {str(e)}")
             raise
 
-    async def _train_epoch(self, epoch: int, event_emitter: TrainingEventEmitter):
-        self.model.model.train()
-        total_loss = 0
-        correct_predictions = 0
-        total_predictions = 0
-        
-        progress_bar = tqdm(self.train_loader, desc=f"Training Epoch {epoch + 1}")
-        
-        for batch_idx, batch in enumerate(progress_bar):
-            try:
-                with autocast(enabled=self.config.mixed_precision):
-                    loss, accuracy = self._process_batch(batch)
-                    
-                if self.scaler:
-                    self.scaler.scale(loss).backward()
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    loss.backward()
-                    self.optimizer.step()
-                
-                self.optimizer.zero_grad()
-                
-                # Update metrics
-                total_loss += loss.item()
-                batch_metrics = {
-                    "epoch": epoch,
-                    "step": batch_idx,
-                    "loss": loss.item(),
-                    "accuracy": accuracy
-                }
-                
-                if batch_idx % 10 == 0:  # Emit every 10 batches
-                    await event_emitter.emit_metrics(batch_metrics)
-                
-            except Exception as e:
-                logger.error(f"Error in batch {batch_idx}: {str(e)}")
-                continue
-        
-        return {
-            "loss": total_loss / len(self.train_loader),
-            "accuracy": correct_predictions / total_predictions if total_predictions > 0 else 0
-        }
+    def get_recommendations(
+        self,
+        condition: str,
+        patient_data: Dict,
+        include_references: bool = True
+    ) -> Dict:
+        """Generate medical recommendations based on condition and patient data"""
+        try:
+            # Prepare input prompt
+            prompt = self._format_recommendation_prompt(condition, patient_data)
+            
+            # Generate recommendations
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=1024
+            ).to(self.device)
 
-    async def _validate_epoch(self, epoch: int):
-        self.model.model.eval()
-        total_loss = 0
-        correct_predictions = 0
-        total_predictions = 0
-        
-        with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc=f"Validation Epoch {epoch + 1}"):
-                loss, accuracy = self._process_batch(batch)
-                total_loss += loss.item()
-                
-        return {
-            "loss": total_loss / len(self.val_loader),
-            "accuracy": correct_predictions / total_predictions if total_predictions > 0 else 0
-        }
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_length=2048,
+                    num_return_sequences=1,
+                    do_sample=True,
+                    temperature=0.3  # Lower temperature for more focused recommendations
+                )
 
-    def _process_batch(self, batch):
-        inputs = batch["text"]
-        encoded = self.model.tokenizer(
-            inputs,
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        ).to(self.device)
-        
-        outputs = self.model.model(**encoded, labels=encoded["input_ids"])
-        loss = outputs.loss
-        
-        # Calculate accuracy (simplified for demonstration)
-        predictions = outputs.logits.argmax(-1)
-        correct = (predictions == encoded["input_ids"]).float().mean()
-        
-        return loss, correct.item()
+            recommendations = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            response = {
+                "status": "success",
+                "recommendations": self._parse_recommendations(recommendations),
+                "confidence": self.model.get_confidence(outputs)
+            }
 
-    def _save_checkpoint(self, epoch: int, val_loss: float):
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'val_loss': val_loss,
-        }
-        torch.save(checkpoint, f'checkpoints/model_epoch_{epoch}.pt') 
+            if include_references:
+                response["references"] = self.model.get_references(recommendations)
+
+            return response
+
+        except Exception as e:
+            logger.error(f"Error generating recommendations: {str(e)}")
+            raise
+
+    def analyze_interactions(self, medications: List[str]) -> Dict:
+        """Analyze potential drug interactions"""
+        try:
+            # Prepare interaction analysis prompt
+            prompt = self._format_interaction_prompt(medications)
+            
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                padding=True,
+                truncation=True
+            ).to(self.device)
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_length=1024,
+                    num_return_sequences=1
+                )
+
+            analysis = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            return {
+                "status": "success",
+                "interactions": self._parse_interactions(analysis),
+                "severity_levels": self._get_severity_levels(analysis),
+                "references": self.model.get_references(analysis)
+            }
+
+        except Exception as e:
+            logger.error(f"Error analyzing interactions: {str(e)}")
+            raise
+
+    def analyze_symptoms(
+        self,
+        symptoms: List[str],
+        patient_data: Optional[Dict] = None
+    ) -> Dict:
+        """Analyze symptoms and suggest possible conditions"""
+        try:
+            # Prepare symptom analysis prompt
+            prompt = self._format_symptom_prompt(symptoms, patient_data)
+            
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                padding=True,
+                truncation=True
+            ).to(self.device)
+
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_length=1024,
+                    num_return_sequences=3  # Get multiple possible conditions
+                )
+
+            analysis = [
+                self.tokenizer.decode(output, skip_special_tokens=True)
+                for output in outputs
+            ]
+            
+            return {
+                "status": "success",
+                "possible_conditions": self._parse_conditions(analysis),
+                "confidence_scores": self.model.get_confidence(outputs),
+                "recommendations": self._get_recommendations(analysis),
+                "references": self.model.get_references(str(analysis))
+            }
+
+        except Exception as e:
+            logger.error(f"Error analyzing symptoms: {str(e)}")
+            raise
+
+    def _format_recommendation_prompt(self, condition: str, patient_data: Dict) -> str:
+        """Format prompt for recommendation generation"""
+        return f"""Provide evidence-based recommendations for {condition}.
+Patient Information:
+- Age: {patient_data['age']}
+- Existing Conditions: {', '.join(patient_data['conditions'])}
+- Current Medications: {', '.join(patient_data['medications'])}
+{self._format_additional_data(patient_data)}
+"""
+
+    def _format_interaction_prompt(self, medications: List[str]) -> str:
+        """Format prompt for drug interaction analysis"""
+        return f"Analyze potential interactions between the following medications: {', '.join(medications)}"
+
+    def _format_symptom_prompt(self, symptoms: List[str], patient_data: Optional[Dict]) -> str:
+        """Format prompt for symptom analysis"""
+        prompt = f"Analyze the following symptoms: {', '.join(symptoms)}"
+        if patient_data:
+            prompt += f"\nPatient Context: {self._format_additional_data(patient_data)}"
+        return prompt
+
+    def _format_additional_data(self, data: Dict) -> str:
+        """Format additional patient data if available"""
+        additional = []
+        if data.get("vitals"):
+            additional.append("Vitals: " + ", ".join(f"{k}: {v}" for k, v in data["vitals"].items()))
+        if data.get("lab_results"):
+            additional.append("Lab Results: " + ", ".join(f"{k}: {v}" for k, v in data["lab_results"].items()))
+        return "\n".join(additional) if additional else ""
+
+    def _parse_recommendations(self, text: str) -> List[Dict]:
+        """Parse model output into structured recommendations"""
+        # Implementation depends on model output format
+        pass
+
+    def _parse_interactions(self, text: str) -> List[Dict]:
+        """Parse model output into structured interaction data"""
+        # Implementation depends on model output format
+        pass
+
+    def _get_severity_levels(self, text: str) -> Dict:
+        """Extract interaction severity levels"""
+        # Implementation depends on model output format
+        pass
+
+    def _parse_conditions(self, analyses: List[str]) -> List[Dict]:
+        """Parse model output into structured condition data"""
+        # Implementation depends on model output format
+        pass
+
+    def _get_recommendations(self, analyses: List[str]) -> List[Dict]:
+        """Extract recommendations from analyses"""
+        # Implementation depends on model output format
+        pass 

@@ -7,6 +7,7 @@ Qure is a proprietary, state-of-the-art medical language model developed for hea
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Node.js 16+](https://img.shields.io/badge/Node.js-16+-green.svg)](https://nodejs.org/)
+[![PyTorch 2.2.1](https://img.shields.io/badge/PyTorch-2.2.1-red.svg)](https://pytorch.org/)
 
 ## 🌟 Key Features
 
@@ -42,22 +43,78 @@ Qure is a proprietary, state-of-the-art medical language model developed for hea
   - CPU: 4+ cores
   - RAM: 16GB minimum (32GB recommended)
   - Storage: 50GB available space
-  - GPU: NVIDIA GPU with 8GB+ VRAM (optional, for enhanced performance)
+  - GPU: NVIDIA GPU with 8GB+ VRAM (recommended)
+    - RTX 3060 or higher for Ampere optimizations
+    - CUDA 11.8 or 12.1 support required
 
 - **Software**
   - Python 3.10 or higher
   - Node.js 16 or higher
   - Rust toolchain
+  - CUDA Toolkit (for GPU support)
   - macOS (M1/Intel) or Linux
 
-### Quick Installation
+### Installation Guide
 
+#### 1. Clone the Repository
 ```bash
 # Clone the repository (requires authentication)
 git clone https://github.com/qure-ai/qure.git
 cd qure
+```
 
-# Run the automated setup script
+#### 2. GPU Setup (Skip for CPU-only installation)
+
+Check your CUDA version:
+```python
+import torch
+print(torch.version.cuda)
+```
+
+#### 3. Install Dependencies
+
+We provide different installation paths based on your GPU:
+
+##### For RTX 3090, 4090, or newer Ampere GPUs:
+```bash
+# Install PyTorch 2.2.1
+pip install --upgrade pip
+pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install Unsloth and dependencies
+pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes
+```
+
+##### For older GPUs (RTX 2080, T4, GTX 1080):
+```bash
+# Install PyTorch 2.2.1
+pip install --upgrade pip
+pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install Unsloth and dependencies
+pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes
+```
+
+##### For CPU-only or Apple Silicon:
+```bash
+pip install --upgrade pip
+pip install torch torchvision torchaudio
+pip install "unsloth @ git+https://github.com/unslothai/unsloth.git"
+```
+
+#### 4. Verify Installation
+
+```bash
+# Verify CUDA installation (if using GPU)
+nvcc --version
+
+# Verify Python dependencies
+python -m xformers.info
+python -m bitsandbytes
+
+# Start the application
 ./start.sh
 ```
 
