@@ -56,6 +56,33 @@ install_python_dependencies() {
         pyyaml>=5.4.1 || handle_error "Failed to install utility packages"
 }
 
+# Function to setup Colab environment
+setup_colab() {
+    print_step "Setting up Google Colab environment..."
+    
+    # Install system dependencies
+    print_step "Installing system dependencies..."
+    apt-get update && apt-get install -y curl git
+
+    # Clone repository if not already in it
+    if [ ! -d "backend" ]; then
+        print_step "Cloning repository..."
+        git clone https://github.com/your-repo/qure.git .
+    fi
+    
+    # Create necessary directories
+    mkdir -p logs
+    mkdir -p models
+    mkdir -p system_info
+}
+
+# Check if running in Colab
+IN_COLAB=0
+if python -c "import google.colab" 2>/dev/null; then
+    IN_COLAB=1
+    setup_colab
+fi
+
 # Check for Python
 if ! command_exists python3 && ! command_exists python; then
     echo "Python is not installed. Please install Python 3.10 or higher:"
@@ -63,26 +90,30 @@ if ! command_exists python3 && ! command_exists python; then
     exit 1
 fi
 
-# Check for npm/Node.js
-if ! command_exists npm; then
-    echo "Node.js/npm is not installed. Please install Node.js 16 or higher:"
-    echo "Visit: https://nodejs.org/en/download/"
-    exit 1
+# Check for npm/Node.js (skip in Colab)
+if [ $IN_COLAB -eq 0 ]; then
+    if ! command_exists npm; then
+        echo "Node.js/npm is not installed. Please install Node.js 16 or higher:"
+        echo "Visit: https://nodejs.org/en/download/"
+        exit 1
+    fi
 fi
 
-# Setup Python virtual environment
-print_step "Setting up Python virtual environment..."
+# Setup Python environment
+print_step "Setting up Python environment..."
 cd backend || handle_error "Backend directory not found"
 
-# Create virtual environment
-if [ ! -d "venv" ]; then
-    print_step "Creating new virtual environment..."
-    python3 -m venv venv || handle_error "Failed to create virtual environment"
-fi
+if [ $IN_COLAB -eq 0 ]; then
+    # Create virtual environment (skip in Colab)
+    if [ ! -d "venv" ]; then
+        print_step "Creating new virtual environment..."
+        python3 -m venv venv || handle_error "Failed to create virtual environment"
+    fi
 
-# Activate virtual environment
-print_step "Activating virtual environment..."
-source venv/bin/activate || handle_error "Failed to activate virtual environment"
+    # Activate virtual environment
+    print_step "Activating virtual environment..."
+    source venv/bin/activate || handle_error "Failed to activate virtual environment"
+fi
 
 # Install base dependencies
 install_python_dependencies
@@ -98,6 +129,7 @@ fi
 PYTORCH_INSTALL_TYPE=$(echo $SYSTEM_INFO | python -c "import sys, json; print(json.load(sys.stdin)['pytorch_install_type'])")
 PYTORCH_COMMAND=$(echo $SYSTEM_INFO | python -c "import sys, json; print(json.load(sys.stdin)['install_commands']['pytorch'])")
 EXTRA_COMMANDS=$(echo $SYSTEM_INFO | python -c "import sys, json; print('\n'.join(json.load(sys.stdin)['install_commands']['extras']))")
+IS_COLAB=$(echo $SYSTEM_INFO | python -c "import sys, json; print(json.load(sys.stdin).get('is_colab', False))")
 
 # Install PyTorch based on system configuration
 print_step "Installing PyTorch for $PYTORCH_INSTALL_TYPE..."
@@ -135,44 +167,75 @@ if missing_packages:
 
 # Start backend server
 print_step "Starting backend server..."
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
-BACKEND_PID=$!
+if [ $IN_COLAB -eq 1 ]; then
+    # In Colab, use ngrok for public access
+    print_step "Setting up ngrok tunnel..."
+    pip install pyngrok
+    python -c "
+from pyngrok import ngrok
+import uvicorn
+import threading
+import time
 
-# Verify backend server started
-print_step "Waiting for backend server to start..."
-for i in {1..60}; do
-    if curl -s http://localhost:8000/docs >/dev/null 2>&1; then
-        print_step "Backend server is running!"
-        break
+def run_server():
+    uvicorn.run('main:app', host='0.0.0.0', port=8000)
+
+# Start the server in a thread
+server_thread = threading.Thread(target=run_server, daemon=True)
+server_thread.start()
+
+# Wait for server to start
+time.sleep(2)
+
+# Setup ngrok tunnel
+url = ngrok.connect(8000)
+print(f'Public URL: {url}')
+
+# Keep the main thread alive
+while True:
+    time.sleep(1)
+"
+else
+    # Normal local server
+    python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
+    BACKEND_PID=$!
+
+    # Verify backend server started
+    print_step "Waiting for backend server to start..."
+    for i in {1..60}; do
+        if curl -s http://localhost:8000/docs >/dev/null 2>&1; then
+            print_step "Backend server is running!"
+            break
+        fi
+        if ! kill -0 $BACKEND_PID 2>/dev/null; then
+            handle_error "Backend server failed to start"
+        fi
+        sleep 1
+        if [ $i -eq 60 ]; then
+            handle_error "Backend server took too long to start"
+        fi
+        echo -n "."
+    done
+
+    # Frontend setup (skip in Colab)
+    print_step "Setting up frontend..."
+    cd ../frontend || handle_error "Frontend directory not found"
+
+    if [ ! -d "node_modules" ]; then
+        print_step "Installing frontend dependencies..."
+        npm install || handle_error "Failed to install frontend dependencies"
     fi
-    if ! kill -0 $BACKEND_PID 2>/dev/null; then
-        handle_error "Backend server failed to start"
+
+    if [ ! -d ".next" ]; then
+        print_step "Building frontend..."
+        npm run build || handle_error "Failed to build frontend"
     fi
-    sleep 1
-    if [ $i -eq 60 ]; then
-        handle_error "Backend server took too long to start"
-    fi
-    echo -n "."
-done
 
-# Frontend setup
-print_step "Setting up frontend..."
-cd ../frontend || handle_error "Frontend directory not found"
+    print_step "Starting frontend server..."
+    npm start
 
-if [ ! -d "node_modules" ]; then
-    print_step "Installing frontend dependencies..."
-    npm install || handle_error "Failed to install frontend dependencies"
-fi
-
-if [ ! -d ".next" ]; then
-    print_step "Building frontend..."
-    npm run build || handle_error "Failed to build frontend"
-fi
-
-print_step "Starting frontend server..."
-npm start
-
-# Cleanup
-print_step "Cleaning up..."
-kill $BACKEND_PID 2>/dev/null
-deactivate 2>/dev/null 
+    # Cleanup
+    print_step "Cleaning up..."
+    kill $BACKEND_PID 2>/dev/null
+    deactivate 2>/dev/null
+fi 
