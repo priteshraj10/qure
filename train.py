@@ -11,10 +11,11 @@ import sys
 import psutil
 import os
 from backend.system_check import (
-    check_gpu_requirements,
     check_system_requirements,
+    check_disk_requirements,
     is_disk_space_sufficient,
     estimate_required_space,
+    get_system_info,
     MIN_FREE_SPACE_GB,
     MIN_FREE_SPACE_PERCENT
 )
@@ -178,9 +179,15 @@ class GPUTrainer:
         logger.info(f"Saved checkpoint: {checkpoint_path}")
 
 if __name__ == "__main__":
-    # Verify GPU availability before starting
-    from backend.system_check import check_gpu_requirements
-    gpu_info = check_gpu_requirements()
+    # Verify system requirements before starting
+    try:
+        system_info = get_system_info()
+        if not system_info['cuda']['available']:
+            raise RuntimeError("CUDA is not available. GPU is required for training.")
+        logger.info(f"Using GPU: {system_info['cuda']['gpus'][0]['name']}")
+    except Exception as e:
+        logger.error(f"System check failed: {str(e)}")
+        raise
     
     # Start training
     trainer = GPUTrainer()
