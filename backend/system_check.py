@@ -71,6 +71,26 @@ def get_cuda_version():
     except FileNotFoundError:
         return None
 
+def check_cuda_env():
+    """Check CUDA environment variables and settings"""
+    cuda_env = {
+        'CUDA_VISIBLE_DEVICES': os.getenv('CUDA_VISIBLE_DEVICES', 'Not set'),
+        'CUDA_HOME': os.getenv('CUDA_HOME', 'Not set'),
+        'LD_LIBRARY_PATH': os.getenv('LD_LIBRARY_PATH', 'Not set'),
+        'PATH': os.getenv('PATH', 'Not set')
+    }
+    
+    # Check if CUDA paths exist in LD_LIBRARY_PATH
+    if cuda_env['LD_LIBRARY_PATH'] != 'Not set':
+        cuda_libs = [p for p in cuda_env['LD_LIBRARY_PATH'].split(':') if 'cuda' in p.lower()]
+        cuda_env['cuda_library_paths'] = cuda_libs
+    
+    logger.info("CUDA Environment Variables:")
+    for key, value in cuda_env.items():
+        logger.info(f"{key}: {value}")
+    
+    return cuda_env
+
 def get_system_info():
     """Get detailed system information"""
     system = platform.system().lower()
@@ -86,7 +106,8 @@ def get_system_info():
         'cuda': {
             'available': False,
             'version': None,
-            'gpus': None
+            'gpus': None,
+            'env': check_cuda_env()
         },
         'pytorch_install_type': 'cpu'  # default to CPU
     }

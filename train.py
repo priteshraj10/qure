@@ -37,16 +37,52 @@ logger = logging.getLogger(__name__)
 
 class GPUTrainer:
     def __init__(self, model_name: str = "meditron-7b"):
-        # Ensure GPU is available
-        if not torch.cuda.is_available():
-            raise RuntimeError("GPU is required for training")
+        # Check CUDA availability with detailed error reporting
+        logger.info("Checking GPU availability...")
+        logger.info(f"CUDA is available: {torch.cuda.is_available()}")
+        logger.info(f"CUDA version: {torch.version.cuda}")
         
-        self.device = torch.device("cuda")
+        try:
+            gpu_count = torch.cuda.device_count()
+            logger.info(f"Number of GPUs available: {gpu_count}")
+            
+            if gpu_count > 0:
+                for i in range(gpu_count):
+                    logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+                    logger.info(f"GPU {i} memory: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.2f} GB")
+            else:
+                raise RuntimeError("No GPU devices found")
+                
+        except Exception as e:
+            logger.error(f"Error checking GPU: {str(e)}")
+            raise RuntimeError(f"GPU initialization failed: {str(e)}")
+        
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available. GPU is required for training")
+        
+        # Try to set the device and catch any errors
+        try:
+            self.device = torch.device("cuda")
+            # Test CUDA device
+            test_tensor = torch.tensor([1.0], device=self.device)
+            logger.info(f"Successfully created test tensor on GPU: {test_tensor.device}")
+        except Exception as e:
+            logger.error(f"Failed to initialize CUDA device: {str(e)}")
+            raise RuntimeError(f"GPU initialization failed: {str(e)}")
+        
         logger.info(f"Using GPU: {torch.cuda.get_device_name(0)}")
         
         # Initialize model and move to GPU
-        self.model = AutoModelForCausalLM.from_pretrained(model_name).to(self.device)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        try:
+            logger.info("Loading model...")
+            self.model = AutoModelForCausalLM.from_pretrained(model_name)
+            logger.info("Moving model to GPU...")
+            self.model = self.model.to(self.device)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            logger.info("Model loaded and moved to GPU successfully")
+        except Exception as e:
+            logger.error(f"Failed to load or move model to GPU: {str(e)}")
+            raise
         
         # Create output directories using environment paths
         MODELS_PATH.mkdir(exist_ok=True)
