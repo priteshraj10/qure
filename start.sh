@@ -38,25 +38,77 @@ detect_os() {
     esac
 }
 
-# Function to detect GPU and CUDA
-detect_gpu() {
-    if command_exists nvidia-smi; then
-        GPU_INFO=$(nvidia-smi --query-gpu=gpu_name --format=csv,noheader)
-        if [[ $GPU_INFO == *"RTX 30"* ]] || [[ $GPU_INFO == *"RTX 40"* ]] || [[ $GPU_INFO == *"A100"* ]] || [[ $GPU_INFO == *"H100"* ]]; then
-            echo "ampere"
-        else
-            echo "older"
-        fi
-    elif [[ "$(uname -m)" == "arm64" ]] && [[ "$(detect_os)" == "macos" ]]; then
-        echo "apple_silicon"
-    else
-        echo "cpu"
-    fi
+# Function to detect CPU architecture
+detect_arch() {
+    case "$(uname -m)" in
+        x86_64*)    echo "x86_64";;
+        arm64*)     echo "arm64";;
+        aarch64*)   echo "arm64";;
+        *)          echo "unknown";;
+    esac
 }
 
-# Detect operating system
+# Function to install PyTorch based on OS and architecture
+install_pytorch() {
+    local os_type=$1
+    local arch_type=$2
+    local gpu_type=$3
+    
+    print_step "Installing PyTorch for $os_type ($arch_type) with $gpu_type support..."
+    
+    case "$os_type" in
+        "macos")
+            if [ "$arch_type" = "arm64" ]; then
+                python -m pip install torch torchvision torchaudio || handle_error "Failed to install PyTorch for M1/M2 Mac"
+            else
+                python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || handle_error "Failed to install PyTorch for Intel Mac"
+            fi
+            ;;
+        "linux")
+            if [ "$gpu_type" = "ampere" ] || [ "$gpu_type" = "older" ]; then
+                python -m pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || handle_error "Failed to install PyTorch with CUDA support"
+            else
+                python -m pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || handle_error "Failed to install PyTorch for CPU"
+            fi
+            ;;
+        "windows")
+            if [ "$gpu_type" = "ampere" ] || [ "$gpu_type" = "older" ]; then
+                python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || handle_error "Failed to install PyTorch with CUDA support"
+            else
+                python -m pip install torch torchvision torchaudio || handle_error "Failed to install PyTorch for CPU"
+            fi
+            ;;
+        *)
+            handle_error "Unsupported operating system"
+            ;;
+    esac
+}
+
+# Function to install Unsloth based on GPU type
+install_unsloth() {
+    local gpu_type=$1
+    
+    print_step "Installing Unsloth with appropriate optimizations..."
+    
+    case "$gpu_type" in
+        "ampere")
+            python -m pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
+            python -m pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes || handle_error "Failed to install Unsloth dependencies"
+            ;;
+        "older")
+            python -m pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
+            python -m pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes || handle_error "Failed to install Unsloth dependencies"
+            ;;
+        *)
+            python -m pip install "unsloth @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
+            ;;
+    esac
+}
+
+# Detect system information
 OS_TYPE=$(detect_os)
-print_step "Detected OS: $OS_TYPE"
+ARCH_TYPE=$(detect_arch)
+print_step "Detected OS: $OS_TYPE ($ARCH_TYPE)"
 
 # Check for required commands
 print_step "Checking system dependencies..."
@@ -102,13 +154,6 @@ if ! command_exists npm; then
     exit 1
 fi
 
-# Install Rust if not present (optional, only if needed)
-if ! command_exists rustc && [ "$OS_TYPE" != "windows" ]; then
-    print_step "Installing Rust..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
-fi
-
 # Setup Python virtual environment
 print_step "Setting up Python virtual environment..."
 cd backend || handle_error "Backend directory not found"
@@ -135,32 +180,15 @@ source "$VENV_ACTIVATE" || handle_error "Failed to activate virtual environment"
 print_step "Upgrading pip..."
 python -m pip install --upgrade pip || handle_error "Failed to upgrade pip"
 
-# Detect GPU type and install appropriate PyTorch version
+# Detect GPU type
 GPU_TYPE=$(detect_gpu)
 print_step "Detected GPU type: $GPU_TYPE"
 
-if [ "$GPU_TYPE" = "ampere" ]; then
-    print_step "Installing PyTorch for Ampere GPU..."
-    python -m pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || handle_error "Failed to install PyTorch"
-    print_step "Installing Unsloth with Ampere optimizations..."
-    python -m pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
-    python -m pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes || handle_error "Failed to install dependencies"
-elif [ "$GPU_TYPE" = "older" ]; then
-    print_step "Installing PyTorch for older NVIDIA GPU..."
-    python -m pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 || handle_error "Failed to install PyTorch"
-    print_step "Installing Unsloth for older GPUs..."
-    python -m pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
-    python -m pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes || handle_error "Failed to install dependencies"
-else
-    print_step "Installing PyTorch for CPU/Apple Silicon..."
-    if [ "$GPU_TYPE" = "apple_silicon" ]; then
-        python -m pip install torch torchvision torchaudio || handle_error "Failed to install PyTorch"
-    else
-        python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu || handle_error "Failed to install PyTorch"
-    fi
-    print_step "Installing Unsloth without GPU optimizations..."
-    python -m pip install "unsloth @ git+https://github.com/unslothai/unsloth.git" || handle_error "Failed to install Unsloth"
-fi
+# Install PyTorch based on system configuration
+install_pytorch "$OS_TYPE" "$ARCH_TYPE" "$GPU_TYPE"
+
+# Install Unsloth based on GPU type
+install_unsloth "$GPU_TYPE"
 
 # Install web dependencies
 print_step "Installing web dependencies..."
@@ -170,7 +198,10 @@ fi
 
 # Verify installations
 print_step "Verifying installations..."
-if [ "$GPU_TYPE" != "apple_silicon" ] && [ "$GPU_TYPE" != "cpu" ]; then
+python -c "import torch; print(f'PyTorch version: {torch.__version__}')" || handle_error "PyTorch installation verification failed"
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" || print_step "CUDA not available"
+
+if [ "$GPU_TYPE" != "cpu" ]; then
     if command_exists nvcc; then
         nvcc --version
     fi

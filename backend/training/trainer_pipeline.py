@@ -6,6 +6,7 @@ import logging
 import platform
 import subprocess
 import json
+import os
 from pathlib import Path
 
 logging.basicConfig(
@@ -18,6 +19,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class SystemInfo:
+    def __init__(self):
+        self.os_type = platform.system().lower()
+        self.architecture = platform.machine().lower()
+        self.python_version = platform.python_version()
+        self.cuda_version = None
+        self._detect_cuda()
+
+    def _detect_cuda(self):
+        """Detect CUDA version if available"""
+        try:
+            if torch.cuda.is_available():
+                self.cuda_version = torch.version.cuda
+        except Exception as e:
+            logger.warning(f"Error detecting CUDA version: {str(e)}")
+
+    def to_dict(self) -> Dict:
+        """Convert system information to dictionary"""
+        return {
+            "os_type": self.os_type,
+            "architecture": self.architecture,
+            "python_version": self.python_version,
+            "cuda_version": self.cuda_version
+        }
+
 class GPUInfo:
     def __init__(self):
         self.available = False
@@ -25,12 +51,21 @@ class GPUInfo:
         self.cuda_version = None
         self.device_count = 0
         self.memory_info = {}
+        self.device_type = self._detect_device_type()
         self._detect_gpu()
+
+    def _detect_device_type(self) -> str:
+        """Detect the type of compute device available"""
+        if torch.cuda.is_available():
+            return "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
 
     def _detect_gpu(self):
         """Detect GPU and CUDA information across different platforms"""
         try:
-            if torch.cuda.is_available():
+            if self.device_type == "cuda":
                 self.available = True
                 self.device_count = torch.cuda.device_count()
                 self.device_name = torch.cuda.get_device_name(0)
@@ -38,23 +73,53 @@ class GPUInfo:
                 
                 # Get memory info for each GPU
                 for i in range(self.device_count):
+                    props = torch.cuda.get_device_properties(i)
                     self.memory_info[i] = {
-                        "total": torch.cuda.get_device_properties(i).total_memory,
-                        "allocated": torch.cuda.memory_allocated(i),
-                        "cached": torch.cuda.memory_reserved(i)
+                        "name": props.name,
+                        "total_memory": props.total_memory,
+                        "major": props.major,
+                        "minor": props.minor,
+                        "multi_processor_count": props.multi_processor_count
                     }
-            elif torch.backends.mps.is_available():
+            elif self.device_type == "mps":
                 self.available = True
                 self.device_name = "Apple Silicon"
                 self.device_count = 1
             
         except Exception as e:
             logger.warning(f"Error detecting GPU: {str(e)}")
+            self.device_type = "cpu"
+
+    def get_optimal_settings(self) -> Dict:
+        """Get optimal settings for model initialization based on device"""
+        settings = {
+            "device_map": None,
+            "torch_dtype": torch.float32,
+            "use_mixed_precision": False
+        }
+
+        if self.device_type == "cuda":
+            # For CUDA devices, use automatic device mapping and mixed precision
+            settings.update({
+                "device_map": "auto",
+                "torch_dtype": torch.float16,
+                "use_mixed_precision": True
+            })
+        elif self.device_type == "mps":
+            # For Apple Silicon, use specific optimizations
+            settings.update({
+                "device_map": None,
+                "torch_dtype": torch.float16,
+                "use_mixed_precision": False
+            })
+
+        return settings
 
     def to_dict(self) -> Dict:
         """Convert GPU information to dictionary"""
         return {
             "available": self.available,
+            "device_type": self.device_type,
             "device_name": self.device_name,
             "cuda_version": self.cuda_version,
             "device_count": self.device_count,
@@ -64,21 +129,17 @@ class GPUInfo:
 class TrainingPipeline:
     def __init__(self):
         self.version = "2.0.0"
+        self.system_info = SystemInfo()
         self.gpu_info = GPUInfo()
+        self.device = self.gpu_info.device_type
         
-        # Select appropriate device
-        if self.gpu_info.available:
-            if torch.cuda.is_available():
-                self.device = "cuda"
-            elif torch.backends.mps.is_available():
-                self.device = "mps"
-        else:
-            self.device = "cpu"
-            
+        logger.info(f"System Info: {self.system_info.to_dict()}")
+        logger.info(f"GPU Info: {self.gpu_info.to_dict()}")
         logger.info(f"Using device: {self.device}")
         
-        # Create model directory if it doesn't exist
+        # Create necessary directories
         Path("models").mkdir(exist_ok=True)
+        Path("logs").mkdir(exist_ok=True)
         
         # Initialize model and tokenizer with error handling
         try:
@@ -92,12 +153,19 @@ class TrainingPipeline:
     def _initialize_model(self) -> MedicalLLM:
         """Initialize the model with appropriate settings based on device"""
         try:
+            settings = self.gpu_info.get_optimal_settings()
+            logger.info(f"Initializing model with settings: {settings}")
+            
             model = MedicalLLM.from_pretrained(
                 "qure-ai/medical-model-v2",
-                device_map="auto" if self.device == "cuda" else None,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+                device_map=settings["device_map"],
+                torch_dtype=settings["torch_dtype"]
             )
-            model.to(self.device)
+            
+            # Move model to device if not using device_map="auto"
+            if settings["device_map"] is None:
+                model.to(self.device)
+            
             model.eval()
             return model
         except Exception as e:
@@ -132,6 +200,13 @@ class TrainingPipeline:
         except Exception as e:
             logger.error(f"Model verification failed: {str(e)}")
             raise
+
+    def get_system_info(self) -> Dict:
+        """Get system information"""
+        return {
+            "system": self.system_info.to_dict(),
+            "gpu": self.gpu_info.to_dict()
+        }
 
     def get_gpu_info(self) -> Dict:
         """Get GPU information"""
