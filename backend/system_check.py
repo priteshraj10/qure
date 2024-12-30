@@ -3,6 +3,19 @@ import subprocess
 import json
 import sys
 from pathlib import Path
+import torch
+import logging
+import psutil
+import os
+from typing import Dict, Any, Tuple
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Disk space thresholds
+MIN_FREE_SPACE_GB = 50  # Minimum free space required in GB
+MIN_FREE_SPACE_PERCENT = 15  # Minimum free space required in percentage
+CHECKPOINT_SIZE_ESTIMATE_GB = 5  # Estimated size of each checkpoint in GB
 
 def is_colab():
     """Check if running in Google Colab"""
@@ -152,6 +165,76 @@ def get_install_commands(info):
         ])
     
     return commands
+
+def check_system_requirements() -> Dict[str, Any]:
+    """Verify all system requirements including GPU, CPU, memory, and disk space"""
+    system_info = {
+        "gpu": check_gpu_requirements(),
+        "cpu": check_cpu_requirements(),
+        "memory": check_memory_requirements(),
+        "disk": check_disk_requirements()
+    }
+    
+    # Validate disk space requirements
+    disk_info = system_info["disk"]
+    if not is_disk_space_sufficient(disk_info):
+        raise RuntimeError(
+            f"Insufficient disk space. Required: {MIN_FREE_SPACE_GB}GB free and "
+            f"{MIN_FREE_SPACE_PERCENT}% free space. Current: {disk_info['free']:.1f}GB free "
+            f"({100 - disk_info['percent_used']:.1f}% free)"
+        )
+    
+    logger.info("System Requirements Check Complete")
+    return system_info
+
+def is_disk_space_sufficient(disk_info: Dict[str, float]) -> bool:
+    """Check if available disk space meets requirements"""
+    free_gb = disk_info["free"]
+    free_percent = 100 - disk_info["percent_used"]
+    
+    return (free_gb >= MIN_FREE_SPACE_GB and 
+            free_percent >= MIN_FREE_SPACE_PERCENT)
+
+def estimate_required_space(num_epochs: int) -> float:
+    """Estimate required disk space for training in GB"""
+    # Estimate space for checkpoints
+    checkpoint_space = num_epochs * CHECKPOINT_SIZE_ESTIMATE_GB
+    
+    # Add buffer for logs and temporary files
+    buffer_space = 5  # 5GB buffer
+    
+    return checkpoint_space + buffer_space
+
+def get_available_space(path: str = '.') -> Tuple[float, float]:
+    """Get available disk space in GB and percentage"""
+    disk = psutil.disk_usage(path)
+    return disk.free / (1024**3), 100 - disk.percent
+
+def check_disk_requirements() -> Dict[str, Any]:
+    """Check disk space and return detailed information"""
+    disk = psutil.disk_usage('/')
+    
+    # Get disk space for different relevant directories
+    model_path = Path("models")
+    log_path = Path("logs")
+    
+    # Create directories if they don't exist
+    model_path.mkdir(exist_ok=True)
+    log_path.mkdir(exist_ok=True)
+    
+    # Get disk info for each path
+    model_disk = psutil.disk_usage(str(model_path))
+    log_disk = psutil.disk_usage(str(log_path))
+    
+    return {
+        "total": disk.total / (1024**3),  # GB
+        "free": disk.free / (1024**3),  # GB
+        "percent_used": disk.percent,
+        "model_dir_free": model_disk.free / (1024**3),  # GB
+        "log_dir_free": log_disk.free / (1024**3),  # GB
+        "min_required_gb": MIN_FREE_SPACE_GB,
+        "min_required_percent": MIN_FREE_SPACE_PERCENT
+    }
 
 def main():
     """Main function to check system and output information"""
