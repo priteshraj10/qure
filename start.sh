@@ -27,7 +27,7 @@ setup_env() {
     echo "Setting up environment in: $INSTALL_PATH"
     
     # Create necessary directories
-    mkdir -p "$INSTALL_PATH"/{models,logs,venv}
+    mkdir -p "$INSTALL_PATH"/{models,logs}
     
     # Check minimum disk space for setup (10GB)
     if ! check_disk_space 10 "$INSTALL_PATH"; then
@@ -40,55 +40,50 @@ setup_env() {
         exit 1
     fi
     
-    # Create and activate virtual environment in the external drive
-    if [ ! -d "$INSTALL_PATH/venv" ]; then
-        # Try to use conda if available
-        if command_exists conda; then
-            echo "Using conda to create environment..."
-            conda create -p "$INSTALL_PATH/venv" python=3.11 -y
-            conda activate "$INSTALL_PATH/venv"
-            
-            # Install core packages with conda
-            conda install -y numpy pandas scipy scikit-learn matplotlib
-            
-            # Install PyTorch with conda
-            conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-        else
-            echo "Using venv to create environment..."
-            python3.11 -m venv "$INSTALL_PATH/venv"
-            source "$INSTALL_PATH/venv/bin/activate"
-            
-            # Upgrade core packages
-            pip install --upgrade pip setuptools wheel
-            
-            # Install PyTorch first
-            pip install --no-cache-dir torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-            
-            # Install other packages using binary wheels when possible
-            pip install --no-cache-dir --prefer-binary -r requirements.txt
-        fi
-    else
-        if [ -f "$INSTALL_PATH/venv/conda-meta/history" ]; then
-            conda activate "$INSTALL_PATH/venv"
-        else
-            source "$INSTALL_PATH/venv/bin/activate"
-        fi
+    # Get CUDA version from nvidia-smi
+    CUDA_VERSION=$(nvidia-smi | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+")
+    CUDA_MAJOR_VERSION=${CUDA_VERSION%.*}
+    echo "Detected CUDA version: $CUDA_VERSION"
+    
+    # Create new conda environment
+    ENV_NAME="qure_env"
+    if conda env list | grep -q "^$ENV_NAME "; then
+        echo "Removing existing conda environment..."
+        conda deactivate
+        conda env remove -n $ENV_NAME -y
     fi
+    
+    echo "Creating new conda environment..."
+    conda create -n $ENV_NAME python=3.11 -y
+    
+    # Activate the environment
+    eval "$(conda shell.bash hook)"
+    conda activate $ENV_NAME
+    
+    if [ $? -ne 0 ]; then
+        echo "Failed to activate conda environment"
+        exit 1
+    fi
+    
+    echo "Installing PyTorch with CUDA support..."
+    conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+    
+    echo "Installing other dependencies..."
+    pip install -r requirements.txt
     
     # Set PYTHONPATH to include the project root
     export PYTHONPATH="$INSTALL_PATH:$PYTHONPATH"
     
     echo "Environment setup complete in $INSTALL_PATH"
-    echo "Python version: $(python --version)"
-    echo "Pip version: $(pip --version)"
+    python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
     python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
-    python -c "import numpy; print(f'NumPy version: {numpy.__version__}')"
+    python -c "import torch; print(f'CUDA version: {torch.version.cuda}')"
+    nvidia-smi
 }
 
 # Function to clean old checkpoints
 clean_old_checkpoints() {
     echo "Cleaning old checkpoints in $INSTALL_PATH/models..."
-    # Keep only the 3 most recent checkpoints
     cd "$INSTALL_PATH/models" && ls -t checkpoint-*.pt | tail -n +4 | xargs -r rm && cd - > /dev/null
 }
 
@@ -96,8 +91,14 @@ clean_old_checkpoints() {
 run_training() {
     echo "Running system checks..."
     
-    # Activate virtual environment from external drive
-    source "$INSTALL_PATH/venv/bin/activate"
+    # Activate conda environment
+    eval "$(conda shell.bash hook)"
+    conda activate qure_env
+    
+    if [ $? -ne 0 ]; then
+        echo "Failed to activate conda environment. Please run setup first."
+        exit 1
+    fi
     
     # Set PYTHONPATH
     export PYTHONPATH="$INSTALL_PATH:$PYTHONPATH"
