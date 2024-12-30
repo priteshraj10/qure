@@ -42,23 +42,47 @@ setup_env() {
     
     # Create and activate virtual environment in the external drive
     if [ ! -d "$INSTALL_PATH/venv" ]; then
-        python -m venv "$INSTALL_PATH/venv"
+        # Try to use conda if available
+        if command_exists conda; then
+            echo "Using conda to create environment..."
+            conda create -p "$INSTALL_PATH/venv" python=3.11 -y
+            conda activate "$INSTALL_PATH/venv"
+            
+            # Install core packages with conda
+            conda install -y numpy pandas scipy scikit-learn matplotlib
+            
+            # Install PyTorch with conda
+            conda install -y pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+        else
+            echo "Using venv to create environment..."
+            python3.11 -m venv "$INSTALL_PATH/venv"
+            source "$INSTALL_PATH/venv/bin/activate"
+            
+            # Upgrade core packages
+            pip install --upgrade pip setuptools wheel
+            
+            # Install PyTorch first
+            pip install --no-cache-dir torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+            
+            # Install other packages using binary wheels when possible
+            pip install --no-cache-dir --prefer-binary -r requirements.txt
+        fi
+    else
+        if [ -f "$INSTALL_PATH/venv/conda-meta/history" ]; then
+            conda activate "$INSTALL_PATH/venv"
+        else
+            source "$INSTALL_PATH/venv/bin/activate"
+        fi
     fi
-    source "$INSTALL_PATH/venv/bin/activate"
     
     # Set PYTHONPATH to include the project root
     export PYTHONPATH="$INSTALL_PATH:$PYTHONPATH"
     
-    # Upgrade pip
-    pip install --upgrade pip
-    
-    # Install PyTorch with CUDA support
-    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-    
-    # Install other requirements
-    pip install -r requirements.txt
-    
     echo "Environment setup complete in $INSTALL_PATH"
+    echo "Python version: $(python --version)"
+    echo "Pip version: $(pip --version)"
+    python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
+    python -c "import numpy; print(f'NumPy version: {numpy.__version__}')"
 }
 
 # Function to clean old checkpoints
