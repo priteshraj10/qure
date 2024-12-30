@@ -9,6 +9,7 @@ from tqdm import tqdm
 from typing import Dict, Any
 import sys
 import psutil
+import os
 from backend.system_check import (
     check_disk_requirements,
     is_disk_space_sufficient,
@@ -17,13 +18,17 @@ from backend.system_check import (
     MIN_FREE_SPACE_PERCENT
 )
 
+# Get paths from environment variables or use defaults
+MODELS_PATH = Path(os.getenv('MODELS_PATH', 'models'))
+LOGS_PATH = Path(os.getenv('LOGS_PATH', 'logs'))
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('training.log')
+        logging.FileHandler(str(LOGS_PATH / 'training.log'))
     ]
 )
 logger = logging.getLogger(__name__)
@@ -41,11 +46,12 @@ class GPUTrainer:
         self.model = AutoModelForCausalLM.from_pretrained(model_name).to(self.device)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
-        # Create output directories
-        Path("models").mkdir(exist_ok=True)
-        Path("logs").mkdir(exist_ok=True)
+        # Create output directories using environment paths
+        MODELS_PATH.mkdir(exist_ok=True)
+        LOGS_PATH.mkdir(exist_ok=True)
         
-        # Initialize wandb
+        # Initialize wandb with custom directory for offline runs
+        os.environ["WANDB_DIR"] = str(LOGS_PATH)
         wandb.init(project="medical-llm", name=f"gpu-training-{wandb.util.generate_id()}")
         
     def prepare_data(self, batch_size: int = 4):
@@ -162,7 +168,7 @@ class GPUTrainer:
         Args:
             epoch (int): Current training epoch
         """
-        checkpoint_path = Path(f"models/checkpoint-{epoch}.pt")
+        checkpoint_path = MODELS_PATH / f"checkpoint-{epoch}.pt"
         torch.save({
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),

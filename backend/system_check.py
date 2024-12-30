@@ -12,6 +12,10 @@ from typing import Dict, Any, Tuple
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Get paths from environment variables or use defaults
+MODELS_PATH = Path(os.getenv('MODELS_PATH', 'models'))
+LOGS_PATH = Path(os.getenv('LOGS_PATH', 'logs'))
+
 # Disk space thresholds
 MIN_FREE_SPACE_GB = 50  # Minimum free space required in GB
 MIN_FREE_SPACE_PERCENT = 15  # Minimum free space required in percentage
@@ -212,11 +216,9 @@ def get_available_space(path: str = '.') -> Tuple[float, float]:
 
 def check_disk_requirements() -> Dict[str, Any]:
     """Check disk space and return detailed information"""
-    disk = psutil.disk_usage('/')
-    
     # Get disk space for different relevant directories
-    model_path = Path("models")
-    log_path = Path("logs")
+    model_path = MODELS_PATH
+    log_path = LOGS_PATH
     
     # Create directories if they don't exist
     model_path.mkdir(exist_ok=True)
@@ -226,6 +228,9 @@ def check_disk_requirements() -> Dict[str, Any]:
     model_disk = psutil.disk_usage(str(model_path))
     log_disk = psutil.disk_usage(str(log_path))
     
+    # Use the path with less available space for the main check
+    disk = model_disk if model_disk.free < log_disk.free else log_disk
+    
     return {
         "total": disk.total / (1024**3),  # GB
         "free": disk.free / (1024**3),  # GB
@@ -233,7 +238,9 @@ def check_disk_requirements() -> Dict[str, Any]:
         "model_dir_free": model_disk.free / (1024**3),  # GB
         "log_dir_free": log_disk.free / (1024**3),  # GB
         "min_required_gb": MIN_FREE_SPACE_GB,
-        "min_required_percent": MIN_FREE_SPACE_PERCENT
+        "min_required_percent": MIN_FREE_SPACE_PERCENT,
+        "models_path": str(model_path),
+        "logs_path": str(log_path)
     }
 
 def main():
