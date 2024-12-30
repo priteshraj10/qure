@@ -11,7 +11,8 @@ import sys
 import psutil
 import os
 from backend.system_check import (
-    check_disk_requirements,
+    check_gpu_requirements,
+    check_system_requirements,
     is_disk_space_sufficient,
     estimate_required_space,
     MIN_FREE_SPACE_GB,
@@ -178,7 +179,7 @@ class GPUTrainer:
 
 if __name__ == "__main__":
     # Verify GPU availability before starting
-    from system_check import check_gpu_requirements
+    from backend.system_check import check_gpu_requirements
     gpu_info = check_gpu_requirements()
     
     # Start training
