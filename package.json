@@ -1,0 +1,19 @@
+{
+  "name": "qure",
+  "version": "1.0.0",
+  "description": "Qure AI Training System",
+  "main": "start.js",
+  "scripts": {
+    "start": "ts-node start.ts",
+    "build": "tsc start.ts",
+    "install-all": "npm install && cd frontend && npm install && cd ../backend && pip install -r requirements.txt"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.16"
+  }
+} 
