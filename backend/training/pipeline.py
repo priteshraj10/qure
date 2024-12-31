@@ -25,7 +25,7 @@ class TrainingConfig:
     warmup_steps: int = 5
     weight_decay: float = 0.01
     seed: int = 3407
-    max_steps: int = 60  # Added from llama example
+    max_steps: int = 60
     early_stopping_patience: int = 3
     
     # LoRA settings
@@ -50,11 +50,15 @@ class UnslothTrainer:
 
     def _setup_environment(self):
         """Setup directories and environment variables"""
-        # Reference to train_model.py for environment setup
-        ```python:train_model.py
-        startLine: 40
-        endLine: 53
-        ```
+        for path in [self.config.output_dir, self.config.cache_dir, self.config.log_dir]:
+            path.mkdir(parents=True, exist_ok=True)
+            
+        os.environ.update({
+            "TORCH_HOME": str(self.config.cache_dir),
+            "HF_HOME": str(self.config.cache_dir),
+            "TRANSFORMERS_CACHE": str(self.config.cache_dir),
+            "WANDB_DIR": str(self.config.log_dir)
+        })
 
     def _setup_wandb(self):
         wandb.init(
@@ -79,7 +83,7 @@ class UnslothTrainer:
                 load_in_4bit=self.config.load_in_4bit
             )
 
-            # Add LoRA adapters with improved settings
+            # Add LoRA adapters
             model = FastLanguageModel.get_peft_model(
                 model,
                 r=self.config.lora_r,
@@ -90,14 +94,8 @@ class UnslothTrainer:
                 use_gradient_checkpointing="unsloth"
             )
 
-            # Prepare dataset with improved processing
+            # Prepare dataset
             dataset = load_dataset("yahma/alpaca-cleaned", split="train")
-            dataset = dataset.map(
-                self.format_prompt,
-                batched=True,
-                num_proc=2,
-                remove_columns=dataset.column_names
-            )
 
             # Setup trainer with optimized arguments
             training_args = TrainingArguments(
@@ -134,28 +132,12 @@ class UnslothTrainer:
                 args=training_args
             )
 
-            # Custom training loop with early stopping
-            def early_stopping_callback(args, state, control, **kwargs):
-                if state.best_metric is not None:
-                    if state.best_metric < self.best_loss:
-                        self.best_loss = state.best_metric
-                        self.no_improvement_count = 0
-                    else:
-                        self.no_improvement_count += 1
-                        
-                    if self.no_improvement_count >= self.config.early_stopping_patience:
-                        control.should_training_stop = True
-                return control
-
-            trainer.add_callback(early_stopping_callback)
-
             # Train and monitor
             self.logger.info("Starting training...")
             trainer_stats = trainer.train()
-            self._log_training_stats(trainer_stats)
             
-            # Save model in different formats
-            self._save_model(trainer, model, tokenizer)
+            # Save model
+            self._save_model(trainer)
             
             return trainer_stats
 
@@ -165,22 +147,9 @@ class UnslothTrainer:
         finally:
             wandb.finish()
 
-    def _log_training_stats(self, trainer_stats):
-        """Log training statistics"""
-        # Reference to llama example for memory stats
-        ```python:llama_3_2_1b_+_3b_+_unsloth_2x_faster_finetuning.py
-        startLine: 177
-        endLine: 184
-        ```
-
-    def _save_model(self, trainer, model, tokenizer):
-        """Save model in different formats"""
-        # Save standard model
-        trainer.save_model(str(self.config.output_dir / "final_model"))
-        
-        # Save merged model in different formats
-        # Reference to llama example for saving formats
-        ```python:llama_3_2_1b_+_3b_+_unsloth_2x_faster_finetuning.py
-        startLine: 280
-        endLine: 289
-        ``` 
+    def _save_model(self, trainer):
+        """Save the model in different formats"""
+        # Save final model
+        save_path = self.config.output_dir / "final_model"
+        trainer.save_model(str(save_path))
+        self.logger.info(f"Model saved to {save_path}") 
