@@ -3,36 +3,28 @@ import logging
 import sys
 from pathlib import Path
 from backend.training.pipeline import UnslothTrainer, TrainingConfig
-from backend.utils.system_checks import verify_system_requirements
+from config.training_config import training_config
 
-def setup_logging():
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(log_dir / "training.log")
-        ]
-    )
-    return logging.getLogger(__name__)
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('logs/training.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def main():
-    logger = setup_logging()
-    
     try:
-        # Reference to system checks
-        ```shell:start.sh
-        startLine: 161
-        endLine: 173
-        ```
+        # Create config from dictionary
+        config = TrainingConfig(**training_config)
         
-        # Initialize training
-        config = TrainingConfig()
+        # Initialize trainer
         trainer = UnslothTrainer(config)
         
+        # Start training
         logger.info("Starting training process...")
         trainer.train()
         
