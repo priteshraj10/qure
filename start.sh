@@ -1,7 +1,10 @@
 #!/bin/bash
 
-# Default installation path
+# Default installation path and requirements
 INSTALL_PATH="$(pwd)"
+MIN_DISK_SPACE_GB=10
+MIN_RAM_GB=8
+REQUIRED_PYTHON_VERSION="3.8"
 
 # Colors for output
 RED='\033[0;31m'
@@ -16,23 +19,46 @@ print_status() {
     echo -e "${color}${message}${NC}"
 }
 
-# Function to detect GPU and install appropriate torch version
-install_torch() {
-    print_status "$GREEN" "Detecting GPU..."
-    
+# Function to check system requirements
+check_system_requirements() {
+    # Check Python version
+    local python_version=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
+    if ! awk -v ver="$python_version" -v req="$REQUIRED_PYTHON_VERSION" 'BEGIN{exit(ver<req)}'; then
+        print_status "$RED" "Error: Python $REQUIRED_PYTHON_VERSION or higher required (found $python_version)"
+        return 1
+    fi
+
+    # Check RAM
+    local total_ram_gb=$(awk '/MemTotal/ {print int($2/1024/1024)}' /proc/meminfo)
+    if [ "$total_ram_gb" -lt "$MIN_RAM_GB" ]; then
+        print_status "$RED" "Error: Insufficient RAM. Required: ${MIN_RAM_GB}GB, Available: ${total_ram_gb}GB"
+        return 1
+    fi
+
+    # Check disk space
+    local available_space_gb=$(df -BG "$INSTALL_PATH" | awk 'NR==2 {print $4}' | sed 's/G//')
+    if [ "$available_space_gb" -lt "$MIN_DISK_SPACE_GB" ]; then
+        print_status "$RED" "Error: Insufficient disk space. Required: ${MIN_DISK_SPACE_GB}GB, Available: ${available_space_gb}GB"
+        return 1
+    fi
+
+    return 0
+}
+
+# Function to detect and install CUDA dependencies
+install_cuda_dependencies() {
     if ! command -v nvidia-smi &> /dev/null; then
         print_status "$YELLOW" "No NVIDIA GPU detected, installing CPU version..."
         pip install torch torchvision torchaudio
         return
     fi
+
+    local gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader)
+    local cuda_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | cut -d'.' -f1)
     
-    # Get GPU model
-    gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader)
-    cuda_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | cut -d'.' -f1)
+    print_status "$GREEN" "Detected GPU: $gpu_name (CUDA $cuda_version)"
     
-    print_status "$GREEN" "Detected GPU: $gpu_name"
-    
-    # Clear pip cache to save space
+    # Clear pip cache
     pip cache purge
     
     if [[ $gpu_name =~ "RTX 30" ]] || [[ $gpu_name =~ "RTX 40" ]] || [[ $gpu_name =~ "A100" ]]; then
@@ -46,18 +72,13 @@ install_torch() {
         pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
         pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes
     fi
-}
 
-# Function to check disk space
-check_disk_space() {
-    local required_gb=$1
-    local path=$2
-    local available_gb=$(df -BG "$path" | awk 'NR==2 {print $4}' | sed 's/G//')
-    
-    if [ "$available_gb" -lt "$required_gb" ]; then
-        print_status "$RED" "Error: Insufficient disk space. Required: ${required_gb}GB, Available: ${available_gb}GB"
+    # Verify CUDA installation
+    if ! python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"; then
+        print_status "$RED" "CUDA installation failed. Please check your GPU drivers."
         return 1
     fi
+
     return 0
 }
 
@@ -65,66 +86,72 @@ check_disk_space() {
 setup_env() {
     print_status "$GREEN" "Setting up environment in: $INSTALL_PATH"
     
-    # Check for minimum disk space (10GB)
-    if ! check_disk_space 10 "$INSTALL_PATH"; then
+    # Check system requirements
+    if ! check_system_requirements; then
         exit 1
     fi
     
-    # Create directories
+    # Create project structure
     local dirs=(
-        "$INSTALL_PATH/outputs/models"
-        "$INSTALL_PATH/outputs/logs"
-        "$INSTALL_PATH/outputs/cache"
-        "$INSTALL_PATH/outputs/checkpoints"
-        "$INSTALL_PATH/venv"
+        "outputs/models"
+        "outputs/logs"
+        "outputs/cache"
+        "outputs/checkpoints"
+        "venv"
     )
     
     for dir in "${dirs[@]}"; do
-        mkdir -p "$dir"
+        mkdir -p "$INSTALL_PATH/$dir"
     done
     
-    # Create and activate virtual environment
-    python3 -m venv "$INSTALL_PATH/venv"
-    source "$INSTALL_PATH/venv/bin/activate"
+    # Setup Python virtual environment
+    python3 -m venv "${INSTALL_PATH}/venv"
+    source "${INSTALL_PATH}/venv/bin/activate"
     
-    # Install torch and dependencies
-    install_torch
+    # Upgrade pip and install dependencies
+    pip install --upgrade pip setuptools wheel
+    
+    # Install CUDA and ML dependencies
+    if ! install_cuda_dependencies; then
+        print_status "$RED" "Failed to install CUDA dependencies"
+        exit 1
+    fi
     
     # Create environment file
-    cat > "$INSTALL_PATH/.env" << EOL
-export PYTHONPATH="$INSTALL_PATH:\$PYTHONPATH"
-export TORCH_HOME="$INSTALL_PATH/outputs/cache"
-export HF_HOME="$INSTALL_PATH/outputs/cache"
-export TRANSFORMERS_CACHE="$INSTALL_PATH/outputs/cache"
-export WANDB_DIR="$INSTALL_PATH/outputs/logs"
+    cat > "${INSTALL_PATH}/.env" << EOL
+export PYTHONPATH="${INSTALL_PATH}:\$PYTHONPATH"
+export TORCH_HOME="${INSTALL_PATH}/outputs/cache"
+export HF_HOME="${INSTALL_PATH}/outputs/cache"
+export TRANSFORMERS_CACHE="${INSTALL_PATH}/outputs/cache"
+export WANDB_DIR="${INSTALL_PATH}/outputs/logs"
 EOL
     
     print_status "$GREEN" "Setup completed successfully!"
     print_status "$YELLOW" "To activate the environment, run:"
-    echo "source $INSTALL_PATH/venv/bin/activate && source $INSTALL_PATH/.env"
+    echo "source \"${INSTALL_PATH}/venv/bin/activate\" && source \"${INSTALL_PATH}/.env\""
 }
 
 # Function to run training
 run_training() {
-    if [ ! -f "$INSTALL_PATH/venv/bin/activate" ]; then
+    if [ ! -f "${INSTALL_PATH}/venv/bin/activate" ]; then
         print_status "$RED" "Virtual environment not found. Please run setup first."
         exit 1
     fi
     
     # Load environment variables
-    if [ -f "$INSTALL_PATH/.env" ]; then
-        source "$INSTALL_PATH/.env"
+    if [ -f "${INSTALL_PATH}/.env" ]; then
+        source "${INSTALL_PATH}/.env"
     fi
     
     # Activate virtual environment and run training
-    source "$INSTALL_PATH/venv/bin/activate"
+    source "${INSTALL_PATH}/venv/bin/activate"
     python train.py
 }
 
 # Function to clean old checkpoints
 clean_old_checkpoints() {
     print_status "$YELLOW" "Cleaning old checkpoints..."
-    find "$INSTALL_PATH/outputs/models" -name "checkpoint-*" -type d | \
+    find "${INSTALL_PATH}/outputs/models" -name "checkpoint-*" -type d | \
         sort -r | tail -n +4 | xargs -r rm -rf
 }
 
