@@ -1,19 +1,21 @@
 # Core ML Libraries
-torch>=2.0.0
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.1.2+cu121
+torchvision==0.16.2+cu121
+torchaudio==2.1.2+cu121
 transformers>=4.36.0
 datasets>=2.14.0
 accelerate>=0.25.0
-bitsandbytes>=0.41.0
+bitsandbytes>=0.41.1
 peft>=0.7.0
 trl>=0.7.4
 unsloth>=0.3.0
 
 # Image Processing
 Pillow>=10.0.0
-opencv-python>=4.8.0
+numpy>=1.24.0
 
 # Utilities
-numpy>=1.24.0
 pandas>=2.0.0
 tqdm>=4.65.0
 PyYAML>=6.0.1
