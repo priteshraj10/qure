@@ -2,76 +2,114 @@ import platform
 import subprocess
 import json
 import sys
-from pathlib import Path
-import torch
-import logging
-import psutil
 import os
-from typing import Dict, Any, Tuple
+from pathlib import Path
+import logging
+from typing import Dict, Any, Tuple, Optional
+import shutil
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Get paths from environment variables or use defaults
 MODELS_PATH = Path(os.getenv('MODELS_PATH', 'models'))
 LOGS_PATH = Path(os.getenv('LOGS_PATH', 'logs'))
 
-# Disk space thresholds
-MIN_FREE_SPACE_GB = 50  # Minimum free space required in GB
-MIN_FREE_SPACE_PERCENT = 15  # Minimum free space required in percentage
-CHECKPOINT_SIZE_ESTIMATE_GB = 5  # Estimated size of each checkpoint in GB
+# System requirements
+MIN_FREE_SPACE_GB = 50
+MIN_FREE_SPACE_PERCENT = 15
+CHECKPOINT_SIZE_ESTIMATE_GB = 5
+MIN_GPU_MEMORY_GB = 6
+MIN_CUDA_VERSION = 11.0
+RECOMMENDED_CUDA_VERSION = 12.1
 
-def is_colab():
-    """Check if running in Google Colab"""
+def import_optional_dependency(name: str) -> Optional[Any]:
+    """Import an optional dependency, return None if not available"""
     try:
-        import google.colab
-        return True
+        import importlib
+        return importlib.import_module(name)
     except ImportError:
-        return False
+        return None
 
-def get_nvidia_gpu_info():
+# Import optional dependencies
+torch = import_optional_dependency("torch")
+psutil = import_optional_dependency("psutil")
+
+def get_gpu_memory_info() -> Dict[str, float]:
+    """Get detailed GPU memory information"""
+    try:
+        if not torch or not torch.cuda.is_available():
+            return {"total": 0, "used": 0, "free": 0}
+        
+        gpu_properties = torch.cuda.get_device_properties(0)
+        total_memory = gpu_properties.total_memory / (1024**3)  # Convert to GB
+        
+        # Get current memory usage
+        memory_allocated = torch.cuda.memory_allocated(0) / (1024**3)
+        memory_reserved = torch.cuda.memory_reserved(0) / (1024**3)
+        
+        return {
+            "total": total_memory,
+            "used": memory_allocated,
+            "reserved": memory_reserved,
+            "free": total_memory - memory_reserved
+        }
+    except Exception as e:
+        logger.error(f"Error getting GPU memory info: {str(e)}")
+        return {"total": 0, "used": 0, "free": 0}
+
+def get_nvidia_gpu_info() -> Optional[list]:
     """Get NVIDIA GPU information if available"""
     try:
+        # Try nvidia-smi first
         nvidia_smi = subprocess.run(
-            ['nvidia-smi', '--query-gpu=gpu_name,driver_version,memory.total', '--format=csv,noheader'],
+            ['nvidia-smi', '--query-gpu=gpu_name,driver_version,memory.total,memory.used,memory.free,temperature.gpu',
+             '--format=csv,noheader,nounits'],
             capture_output=True,
-            text=True
+            text=True,
+            check=True
         )
-        if nvidia_smi.returncode == 0:
-            gpus = []
-            for line in nvidia_smi.stdout.strip().split('\n'):
-                name, driver, memory = line.split(', ')
-                gpus.append({
-                    'name': name,
-                    'driver_version': driver,
-                    'memory': memory
-                })
-            return gpus
-        return None
-    except FileNotFoundError:
-        return None
-
-def get_cuda_version():
-    """Get CUDA version if available"""
-    try:
-        # First try nvcc
-        nvcc_output = subprocess.run(['nvcc', '--version'], capture_output=True, text=True)
-        if nvcc_output.returncode == 0:
-            for line in nvcc_output.stdout.split('\n'):
-                if 'release' in line.lower():
-                    return line.split('V')[-1].split('.')[0]
         
-        # If nvcc not found, try nvidia-smi (common in Colab)
-        nvidia_smi = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
-        if nvidia_smi.returncode == 0:
-            for line in nvidia_smi.stdout.split('\n'):
-                if 'CUDA Version:' in line:
-                    return line.split('CUDA Version:')[1].strip().split('.')[0]
+        gpus = []
+        for line in nvidia_smi.stdout.strip().split('\n'):
+            name, driver, total, used, free, temp = line.split(', ')
+            gpus.append({
+                'name': name,
+                'driver_version': driver,
+                'memory_total_gb': float(total) / 1024,  # Convert MB to GB
+                'memory_used_gb': float(used) / 1024,
+                'memory_free_gb': float(free) / 1024,
+                'temperature_c': float(temp)
+            })
+        return gpus
+    except subprocess.SubprocessError:
+        # If nvidia-smi fails, try using torch
+        try:
+            if torch and torch.cuda.is_available():
+                gpu_count = torch.cuda.device_count()
+                gpus = []
+                for i in range(gpu_count):
+                    props = torch.cuda.get_device_properties(i)
+                    memory_info = get_gpu_memory_info()
+                    gpus.append({
+                        'name': props.name,
+                        'memory_total_gb': props.total_memory / (1024**3),
+                        'memory_used_gb': memory_info['used'],
+                        'memory_free_gb': memory_info['free'],
+                        'compute_capability': f"{props.major}.{props.minor}"
+                    })
+                return gpus
+        except Exception as e:
+            logger.error(f"Error getting GPU info from PyTorch: {str(e)}")
         return None
-    except FileNotFoundError:
+    except Exception as e:
+        logger.error(f"Error getting GPU info: {str(e)}")
         return None
 
-def check_cuda_env():
+def check_cuda_env() -> Dict[str, Any]:
     """Check CUDA environment variables and settings"""
     cuda_env = {
         'CUDA_VISIBLE_DEVICES': os.getenv('CUDA_VISIBLE_DEVICES', 'Not set'),
@@ -80,191 +118,139 @@ def check_cuda_env():
         'PATH': os.getenv('PATH', 'Not set')
     }
     
+    # Check CUDA version
+    try:
+        if torch and torch.cuda.is_available():
+            cuda_env['cuda_version'] = torch.version.cuda
+            cuda_env['cudnn_version'] = torch.backends.cudnn.version()
+            cuda_env['cuda_arch_list'] = torch.cuda.get_arch_list() if hasattr(torch.cuda, 'get_arch_list') else None
+    except Exception as e:
+        logger.error(f"Error getting CUDA version info: {str(e)}")
+    
     # Check if CUDA paths exist in LD_LIBRARY_PATH
     if cuda_env['LD_LIBRARY_PATH'] != 'Not set':
         cuda_libs = [p for p in cuda_env['LD_LIBRARY_PATH'].split(':') if 'cuda' in p.lower()]
         cuda_env['cuda_library_paths'] = cuda_libs
     
-    logger.info("CUDA Environment Variables:")
-    for key, value in cuda_env.items():
-        logger.info(f"{key}: {value}")
-    
     return cuda_env
 
-def get_system_info():
+def get_system_info() -> Dict[str, Any]:
     """Get detailed system information"""
     system = platform.system().lower()
     machine = platform.machine().lower()
-    python_version = platform.python_version()
-    is_in_colab = is_colab()
     
     info = {
-        'os': system,
-        'architecture': machine,
-        'python_version': python_version,
-        'is_colab': is_in_colab,
+        'os': {
+            'system': system,
+            'release': platform.release(),
+            'version': platform.version(),
+            'machine': machine,
+            'processor': platform.processor()
+        },
+        'python': {
+            'version': platform.python_version(),
+            'implementation': platform.python_implementation(),
+            'compiler': platform.python_compiler()
+        },
         'cuda': {
             'available': False,
             'version': None,
             'gpus': None,
-            'env': check_cuda_env()
+            'env': check_cuda_env(),
+            'memory': get_gpu_memory_info()
         },
-        'pytorch_install_type': 'cpu'  # default to CPU
+        'memory': {},
+        'disk': {}
     }
     
+    # Check memory
+    if psutil:
+        memory = psutil.virtual_memory()
+        info['memory'] = {
+            'total_gb': memory.total / (1024**3),
+            'available_gb': memory.available / (1024**3),
+            'used_gb': memory.used / (1024**3),
+            'percent_used': memory.percent
+        }
+    
+    # Check disk space
+    disk_info = check_disk_requirements()
+    if disk_info:
+        info['disk'] = disk_info
+    
     # Check for NVIDIA GPU and CUDA
-    cuda_version = get_cuda_version()
     gpus = get_nvidia_gpu_info()
-    
-    if cuda_version and gpus:
+    if gpus:
         info['cuda']['available'] = True
-        info['cuda']['version'] = cuda_version
         info['cuda']['gpus'] = gpus
+        info['pytorch_install_type'] = 'cuda'
         
-        # Determine PyTorch install type based on GPU and CUDA version
-        if int(cuda_version) >= 11:
-            gpu_names = [gpu['name'].lower() for gpu in gpus]
-            # In Colab, we'll use optimized settings for T4/P100/V100
-            if is_in_colab:
-                info['pytorch_install_type'] = 'cuda-colab'
-            elif any('rtx' in name and ('30' in name or '40' in name) for name in gpu_names):
-                info['pytorch_install_type'] = 'cuda-ampere'
-            else:
-                info['pytorch_install_type'] = 'cuda-normal'
+        # Check if GPU meets minimum requirements
+        gpu_memory = gpus[0]['memory_total_gb']
+        if gpu_memory < MIN_GPU_MEMORY_GB:
+            logger.warning(f"GPU memory ({gpu_memory:.1f}GB) is below recommended minimum ({MIN_GPU_MEMORY_GB}GB)")
     
-    # Check for Apple Silicon
     elif system == 'darwin' and machine == 'arm64':
         info['pytorch_install_type'] = 'mps'
-    
-    # Generate installation commands
-    info['install_commands'] = get_install_commands(info)
+    else:
+        info['pytorch_install_type'] = 'cpu'
     
     return info
 
-def get_install_commands(info):
-    """Generate appropriate installation commands based on system info"""
-    commands = {
-        'pytorch': None,
-        'extras': []
-    }
-    
-    if info['is_colab']:
-        # Colab-specific installations
-        commands['pytorch'] = 'pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121'
-        commands['extras'] = [
-            'pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"',
-            'pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes',
-            'pip install ipywidgets'  # For Colab progress bars
-        ]
-    elif info['pytorch_install_type'] == 'cuda-ampere':
-        commands['pytorch'] = 'pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121'
-        commands['extras'] = [
-            'pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"',
-            'pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes'
-        ]
-    elif info['pytorch_install_type'] == 'cuda-normal':
-        commands['pytorch'] = 'pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121'
-        commands['extras'] = [
-            'pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"',
-            'pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes'
-        ]
-    elif info['pytorch_install_type'] == 'mps':
-        commands['pytorch'] = 'pip install torch torchvision torchaudio'
-        commands['extras'] = [
-            'pip install "unsloth @ git+https://github.com/unslothai/unsloth.git"'
-        ]
-    else:  # CPU
-        if info['os'] == 'linux':
-            commands['pytorch'] = 'pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu'
-        else:
-            commands['pytorch'] = 'pip install torch torchvision torchaudio'
-        commands['extras'] = [
-            'pip install "unsloth @ git+https://github.com/unslothai/unsloth.git"'
-        ]
-    
-    # Add common Colab utilities if in Colab
-    if info['is_colab']:
-        commands['extras'].extend([
-            'pip install jupyter-dash plotly',  # For interactive visualizations
-            'pip install google-colab'  # Ensure Colab integration
-        ])
-    
-    return commands
-
-def check_system_requirements() -> Dict[str, Any]:
-    """Verify all system requirements including GPU, CPU, memory, and disk space"""
-    system_info = {
-        "gpu": check_gpu_requirements(),
-        "cpu": check_cpu_requirements(),
-        "memory": check_memory_requirements(),
-        "disk": check_disk_requirements()
-    }
-    
-    # Validate disk space requirements
-    disk_info = system_info["disk"]
-    if not is_disk_space_sufficient(disk_info):
-        raise RuntimeError(
-            f"Insufficient disk space. Required: {MIN_FREE_SPACE_GB}GB free and "
-            f"{MIN_FREE_SPACE_PERCENT}% free space. Current: {disk_info['free']:.1f}GB free "
-            f"({100 - disk_info['percent_used']:.1f}% free)"
-        )
-    
-    logger.info("System Requirements Check Complete")
-    return system_info
-
-def is_disk_space_sufficient(disk_info: Dict[str, float]) -> bool:
-    """Check if available disk space meets requirements"""
-    free_gb = disk_info["free"]
-    free_percent = 100 - disk_info["percent_used"]
-    
-    return (free_gb >= MIN_FREE_SPACE_GB and 
-            free_percent >= MIN_FREE_SPACE_PERCENT)
-
-def estimate_required_space(num_epochs: int) -> float:
-    """Estimate required disk space for training in GB"""
-    # Estimate space for checkpoints
-    checkpoint_space = num_epochs * CHECKPOINT_SIZE_ESTIMATE_GB
-    
-    # Add buffer for logs and temporary files
-    buffer_space = 5  # 5GB buffer
-    
-    return checkpoint_space + buffer_space
-
-def get_available_space(path: str = '.') -> Tuple[float, float]:
-    """Get available disk space in GB and percentage"""
-    disk = psutil.disk_usage(path)
-    return disk.free / (1024**3), 100 - disk.percent
-
-def check_disk_requirements() -> Dict[str, Any]:
+def check_disk_requirements() -> Optional[Dict[str, Any]]:
     """Check disk space and return detailed information"""
-    # Get disk space for different relevant directories
-    model_path = MODELS_PATH
-    log_path = LOGS_PATH
+    if psutil is None:
+        logger.warning("psutil not available, skipping disk space check")
+        return None
     
-    # Create directories if they don't exist
-    model_path.mkdir(exist_ok=True)
-    log_path.mkdir(exist_ok=True)
-    
-    # Get disk info for each path
-    model_disk = psutil.disk_usage(str(model_path))
-    log_disk = psutil.disk_usage(str(log_path))
-    
-    # Use the path with less available space for the main check
-    disk = model_disk if model_disk.free < log_disk.free else log_disk
-    
-    return {
-        "total": disk.total / (1024**3),  # GB
-        "free": disk.free / (1024**3),  # GB
-        "percent_used": disk.percent,
-        "model_dir_free": model_disk.free / (1024**3),  # GB
-        "log_dir_free": log_disk.free / (1024**3),  # GB
-        "min_required_gb": MIN_FREE_SPACE_GB,
-        "min_required_percent": MIN_FREE_SPACE_PERCENT,
-        "models_path": str(model_path),
-        "logs_path": str(log_path)
-    }
+    try:
+        # Get disk space for different relevant directories
+        model_path = MODELS_PATH
+        log_path = LOGS_PATH
+        
+        # Create directories if they don't exist
+        model_path.mkdir(exist_ok=True, parents=True)
+        log_path.mkdir(exist_ok=True, parents=True)
+        
+        # Get disk info for each path
+        model_disk = psutil.disk_usage(str(model_path))
+        log_disk = psutil.disk_usage(str(log_path))
+        
+        # Use the path with less available space for the main check
+        disk = model_disk if model_disk.free < log_disk.free else log_disk
+        
+        disk_info = {
+            "total": disk.total / (1024**3),  # GB
+            "free": disk.free / (1024**3),  # GB
+            "used": disk.used / (1024**3),  # GB
+            "percent_used": disk.percent,
+            "model_dir": {
+                "path": str(model_path),
+                "free_gb": model_disk.free / (1024**3),
+                "total_gb": model_disk.total / (1024**3)
+            },
+            "log_dir": {
+                "path": str(log_path),
+                "free_gb": log_disk.free / (1024**3),
+                "total_gb": log_disk.total / (1024**3)
+            }
+        }
+        
+        # Check if space requirements are met
+        if disk_info["free"] < MIN_FREE_SPACE_GB:
+            logger.warning(f"Available disk space ({disk_info['free']:.1f}GB) is below minimum requirement ({MIN_FREE_SPACE_GB}GB)")
+        
+        free_percent = 100 - disk_info["percent_used"]
+        if free_percent < MIN_FREE_SPACE_PERCENT:
+            logger.warning(f"Available disk space percentage ({free_percent:.1f}%) is below minimum requirement ({MIN_FREE_SPACE_PERCENT}%)")
+        
+        return disk_info
+        
+    except Exception as e:
+        logger.error(f"Error checking disk space: {str(e)}")
+        return None
 
-def main():
+def main() -> int:
     """Main function to check system and output information"""
     try:
         info = get_system_info()
@@ -276,24 +262,46 @@ def main():
         with open('system_info/system_check.json', 'w') as f:
             json.dump(info, f, indent=2)
         
-        # Output installation type for shell script
-        print(json.dumps({
+        # Check system requirements
+        requirements_met = True
+        
+        # Check GPU/CUDA
+        if not info['cuda']['available']:
+            logger.error("No CUDA-capable GPU found")
+            requirements_met = False
+        else:
+            gpu_memory = info['cuda']['memory']['total']
+            if gpu_memory < MIN_GPU_MEMORY_GB:
+                logger.error(f"Insufficient GPU memory: {gpu_memory:.1f}GB (minimum {MIN_GPU_MEMORY_GB}GB required)")
+                requirements_met = False
+        
+        # Check disk space
+        if info['disk']:
+            if info['disk']['free'] < MIN_FREE_SPACE_GB:
+                logger.error(f"Insufficient disk space: {info['disk']['free']:.1f}GB (minimum {MIN_FREE_SPACE_GB}GB required)")
+                requirements_met = False
+        
+        # Output result
+        result = {
+            'requirements_met': requirements_met,
             'pytorch_install_type': info['pytorch_install_type'],
-            'install_commands': info['install_commands'],
-            'is_colab': info['is_colab']
-        }))
+            'cuda_available': info['cuda']['available'],
+            'gpus': info['cuda']['gpus']
+        }
+        
+        print(json.dumps(result))
+        return 0 if requirements_met else 1
         
     except Exception as e:
+        logger.error(f"System check failed: {str(e)}")
         print(json.dumps({
             'error': str(e),
+            'requirements_met': False,
             'pytorch_install_type': 'cpu',
-            'is_colab': False,
-            'install_commands': get_install_commands({
-                'pytorch_install_type': 'cpu',
-                'os': platform.system().lower(),
-                'is_colab': False
-            })
+            'cuda_available': False,
+            'gpus': None
         }))
+        return 1
 
 if __name__ == "__main__":
-    main() 
+    sys.exit(main()) 
