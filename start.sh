@@ -24,7 +24,7 @@ install_torch() {
         print_status "$YELLOW" "No NVIDIA GPU detected, installing CPU version..."
         pip install torch torchvision torchaudio
         return
-    }
+    fi
     
     # Get GPU model
     gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader)
@@ -117,11 +117,8 @@ run_training() {
     fi
     
     # Activate virtual environment and run training
-    su - $SUDO_USER -c "
-        source '$INSTALL_PATH/venv/bin/activate'
-        cd '$INSTALL_PATH'
-        python train.py
-    "
+    source "$INSTALL_PATH/venv/bin/activate"
+    python train.py
 }
 
 # Function to clean old checkpoints
@@ -129,14 +126,6 @@ clean_old_checkpoints() {
     print_status "$YELLOW" "Cleaning old checkpoints..."
     find "$INSTALL_PATH/outputs/models" -name "checkpoint-*" -type d | \
         sort -r | tail -n +4 | xargs -r rm -rf
-}
-
-# Check if running with sudo
-check_sudo() {
-    if [ "$EUID" -ne 0 ]; then
-        print_status "$RED" "Please run with sudo"
-        exit 1
-    fi
 }
 
 # Parse command line arguments
@@ -151,7 +140,7 @@ case "${1:-}" in
         clean_old_checkpoints
         ;;
     *)
-        echo "Usage: sudo $0 {setup|train|clean}"
+        echo "Usage: $0 {setup|train|clean}"
         exit 1
         ;;
 esac 
