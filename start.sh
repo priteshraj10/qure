@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Default installation path
-INSTALL_PATH="."
+INSTALL_PATH="$(pwd)"
 
 # Colors for output
 RED='\033[0;31m'
@@ -16,21 +16,15 @@ print_status() {
     echo -e "${color}${message}${NC}"
 }
 
-# Function to check if command exists
-command_exists() {
-    command -v "$1" &> /dev/null
-}
-
-# Function to check disk space
-check_disk_space() {
-    local required_gb=$1
-    local path=$2
-    local available_gb=$(df -BG "$path" | awk 'NR==2 {print $4}' | sed 's/G//')
-    
-    if [ "$available_gb" -lt "$required_gb" ]; then
-        print_status "$RED" "Error: Insufficient disk space. Required: ${required_gb}GB, Available: ${available_gb}GB"
+# Function to check permissions
+check_permissions() {
+    local dir=$1
+    if ! touch "$dir/.permissions_test" 2>/dev/null; then
+        print_status "$RED" "Error: No write permissions in $dir"
+        print_status "$YELLOW" "Please run: sudo chown -R $USER:$USER $dir"
         return 1
     fi
+    rm -f "$dir/.permissions_test"
     return 0
 }
 
@@ -38,18 +32,26 @@ check_disk_space() {
 setup_env() {
     print_status "$GREEN" "Setting up environment in: $INSTALL_PATH"
     
-    # Create necessary directories
-    mkdir -p "$INSTALL_PATH"/{outputs/{models,logs,cache},venv}
-    
-    # Check minimum disk space (10GB)
-    if ! check_disk_space 10 "$INSTALL_PATH"; then
+    # Check directory permissions first
+    if ! check_permissions "$INSTALL_PATH"; then
         exit 1
     fi
     
-    # Create virtual environment
-    python -m venv "$INSTALL_PATH/venv"
+    # Create necessary directories with proper permissions
+    for dir in "outputs/models" "outputs/logs" "outputs/cache" "outputs/checkpoints" "venv"; do
+        mkdir -p "$INSTALL_PATH/$dir"
+        chmod 755 "$INSTALL_PATH/$dir"
+    done
     
-    # Activate virtual environment
+    # Create virtual environment with system site packages
+    python3 -m venv "$INSTALL_PATH/venv" --system-site-packages
+    
+    if [ ! -f "$INSTALL_PATH/venv/bin/activate" ]; then
+        print_status "$RED" "Failed to create virtual environment"
+        exit 1
+    fi
+    
+    # Source the virtual environment
     source "$INSTALL_PATH/venv/bin/activate"
     
     if [ $? -ne 0 ]; then
@@ -59,7 +61,7 @@ setup_env() {
     
     # Install dependencies
     print_status "$GREEN" "Installing dependencies..."
-    pip install -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt
     
     # Set environment variables
     export PYTHONPATH="$INSTALL_PATH:$PYTHONPATH"
