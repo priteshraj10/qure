@@ -16,32 +16,59 @@ print_status() {
     echo -e "${color}${message}${NC}"
 }
 
-# Function to check if running with sudo
-check_sudo() {
-    if [ "$EUID" -ne 0 ]; then
-        print_status "$RED" "Please run with sudo"
-        exit 1
+# Function to detect GPU and install appropriate torch version
+install_torch() {
+    print_status "$GREEN" "Detecting GPU..."
+    
+    if ! command -v nvidia-smi &> /dev/null; then
+        print_status "$YELLOW" "No NVIDIA GPU detected, installing CPU version..."
+        pip install torch torchvision torchaudio
+        return
+    }
+    
+    # Get GPU model
+    gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader)
+    cuda_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | cut -d'.' -f1)
+    
+    print_status "$GREEN" "Detected GPU: $gpu_name"
+    
+    # Clear pip cache to save space
+    pip cache purge
+    
+    if [[ $gpu_name =~ "RTX 30" ]] || [[ $gpu_name =~ "RTX 40" ]] || [[ $gpu_name =~ "A100" ]]; then
+        print_status "$GREEN" "Installing PyTorch for modern GPUs..."
+        pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+        pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+        pip install --no-deps packaging ninja einops flash-attn xformers trl peft accelerate bitsandbytes
+    else
+        print_status "$YELLOW" "Installing PyTorch for older GPUs..."
+        pip install torch==2.2.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+        pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+        pip install --no-deps xformers "trl<0.9.0" peft accelerate bitsandbytes
     fi
 }
 
-# Function to check and fix permissions
-fix_permissions() {
-    local dir=$1
-    local user=$SUDO_USER
+# Function to check disk space
+check_disk_space() {
+    local required_gb=$1
+    local path=$2
+    local available_gb=$(df -BG "$path" | awk 'NR==2 {print $4}' | sed 's/G//')
     
-    # Check if directory exists, create if not
-    if [ ! -d "$dir" ]; then
-        mkdir -p "$dir"
+    if [ "$available_gb" -lt "$required_gb" ]; then
+        print_status "$RED" "Error: Insufficient disk space. Required: ${required_gb}GB, Available: ${available_gb}GB"
+        return 1
     fi
-    
-    # Fix permissions
-    chown -R $user:$user "$dir"
-    chmod -R 755 "$dir"
+    return 0
 }
 
 # Function to setup environment
 setup_env() {
     print_status "$GREEN" "Setting up environment in: $INSTALL_PATH"
+    
+    # Check for minimum disk space (10GB)
+    if ! check_disk_space 10 "$INSTALL_PATH"; then
+        exit 1
+    fi
     
     # Create directories
     local dirs=(
@@ -53,31 +80,15 @@ setup_env() {
     )
     
     for dir in "${dirs[@]}"; do
-        fix_permissions "$dir"
+        mkdir -p "$dir"
     done
     
-    # Switch to user context for venv creation
-    su - $SUDO_USER -c "
-        # Create virtual environment
-        python3 -m venv '$INSTALL_PATH/venv' --system-site-packages
-        
-        # Activate virtual environment
-        source '$INSTALL_PATH/venv/bin/activate'
-        
-        # Install dependencies
-        pip install --no-cache-dir -r '$INSTALL_PATH/requirements.txt'
-        
-        # Test CUDA
-        python3 -c '
-import torch
-if torch.cuda.is_available():
-    gpu = torch.cuda.get_device_properties(0)
-    print(f\"GPU: {torch.cuda.get_device_name(0)}\")
-    print(f\"Memory: {gpu.total_memory / 1024**3:.1f}GB\")
-else:
-    print(\"CUDA not available\")
-'
-    "
+    # Create and activate virtual environment
+    python3 -m venv "$INSTALL_PATH/venv"
+    source "$INSTALL_PATH/venv/bin/activate"
+    
+    # Install torch and dependencies
+    install_torch
     
     # Create environment file
     cat > "$INSTALL_PATH/.env" << EOL
@@ -87,10 +98,6 @@ export HF_HOME="$INSTALL_PATH/outputs/cache"
 export TRANSFORMERS_CACHE="$INSTALL_PATH/outputs/cache"
 export WANDB_DIR="$INSTALL_PATH/outputs/logs"
 EOL
-    
-    # Fix permissions for .env file
-    chown $SUDO_USER:$SUDO_USER "$INSTALL_PATH/.env"
-    chmod 644 "$INSTALL_PATH/.env"
     
     print_status "$GREEN" "Setup completed successfully!"
     print_status "$YELLOW" "To activate the environment, run:"
@@ -125,7 +132,12 @@ clean_old_checkpoints() {
 }
 
 # Check if running with sudo
-check_sudo
+check_sudo() {
+    if [ "$EUID" -ne 0 ]; then
+        print_status "$RED" "Please run with sudo"
+        exit 1
+    fi
+}
 
 # Parse command line arguments
 case "${1:-}" in
