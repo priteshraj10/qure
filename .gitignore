@@ -1,16 +1,3 @@
-# Environment and IDE
-.env
-.env.*
-.venv
-venv/
-ENV/
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-Thumbs.db
-
 # Python
 __pycache__/
 *.py[cod]
@@ -33,117 +20,84 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+.idea_modules/
+
+# VS Code
+.vscode/
+*.code-workspace
+.history/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
 
 # Node.js
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.pnpm-debug.log*
+.npm
+.yarn/
 .next/
-.nuxt/
-dist/
-build/
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+out/
 
-# Model and Data
+# Machine Learning
 *.pt
 *.pth
 *.onnx
-*.bin
+*.mlmodel
+*.savedmodel
 *.h5
+*.hdf5
+*.pkl
+*.joblib
 models/
+weights/
 checkpoints/
-*.model
+runs/
+wandb/
+lightning_logs/
+.cache/
+huggingface/
+
+# Data
+*.csv
+*.dat
+*.db
+*.sqlite
+*.npy
+*.npz
+*.json
 data/
 datasets/
+raw/
+processed/
+interim/
+external/
+
+# Logs
 logs/
-wandb/
-runs/
-
-# Medical Data (HIPAA Compliance)
-patient_data/
-medical_records/
-*.dcm
-*.dicom
-*.nii
-*.nii.gz
-
-# Temporary files
 *.log
-*.tmp
-*.temp
-temp/
-.DS_Store
+log.txt
+npm-debug.log*
 
-# Documentation
-docs/_build/
-site/
-
-# Deployment
-*.pem
-*.key
-*.crt
-*.csr
-*.srl
-*.p12
-*.pfx
-
-# Dependencies
-poetry.lock
-package-lock.json
-yarn.lock
-
-# Testing
-.coverage
-coverage/
-.nyc_output/
-junit.xml
-
-# Build outputs
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.dylib
-*.dll
-*.exe
-*.out
-*.app
-
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
-
-# Database
-*.sqlite
-*.sqlite3
-*.db
-*.sql
-*.psql
-
-# Logs and backups
-*.log
-*.bak
-*.swp
-*.swo
-*~
-
-# OS generated files
+# System Files
 .DS_Store
 .DS_Store?
 ._*
@@ -151,13 +105,71 @@ junit.xml
 .Trashes
 ehthumbs.db
 Thumbs.db
+desktop.ini
 
-# Custom project files
-backend/logs/
-frontend/logs/
-*.config.js
-!next.config.js
-!webpack.config.js
-!babel.config.js
-.env.*
-!.env.example 
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Temporary files
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+*.backup
+.temp/
+tmp/
+
+# Coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Profiling
+*.prof
+profile_default/
+ipython_config.py
+
+# Environment variables
+.env*
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build files
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+*.app
+*.manifest
+*.spec
+
+# Documentation
+docs/_build/
+site/
+
+# Project specific
+outputs/
+results/
+predictions/
+lora_model/
+*.gguf
+*.bin
+*.safetensors
