@@ -1,1 +1,35 @@
- 
+# Core ML Libraries
+torch>=2.0.0
+transformers>=4.36.0
+datasets>=2.14.0
+accelerate>=0.25.0
+bitsandbytes>=0.41.0
+peft>=0.7.0
+trl>=0.7.4
+unsloth>=0.3.0
+
+# Image Processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Utilities
+numpy>=1.24.0
+pandas>=2.0.0
+tqdm>=4.65.0
+PyYAML>=6.0.1
+python-dotenv>=1.0.0
+
+# Logging and Monitoring
+wandb>=0.15.0
+tensorboard>=2.14.0
+
+# Quality and Testing
+black>=23.0.0
+isort>=5.12.0
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Optional but recommended
+sentencepiece>=0.1.99  # For tokenization
+safetensors>=0.4.0    # For model saving
+huggingface-hub>=0.19.0  # For model sharing
