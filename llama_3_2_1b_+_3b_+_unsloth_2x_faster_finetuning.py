@@ -142,12 +142,11 @@ trainer = SFTTrainer(
     dataset_text_field = "text",
     max_seq_length = max_seq_length,
     dataset_num_proc = 2,
-    packing = False, # Can make training 5x faster for short sequences.
+    packing = False,
     args = TrainingArguments(
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
         warmup_steps = 5,
-        # num_train_epochs = 1, # Set this for 1 full training run.
         max_steps = 60,
         learning_rate = 2e-4,
         fp16 = not is_bfloat16_supported(),
@@ -157,9 +156,8 @@ trainer = SFTTrainer(
         weight_decay = 0.01,
         lr_scheduler_type = "linear",
         seed = 3407,
-        output_dir = "outputs",
-        report_to = "none", # Use this for WandB etc
-    ),
+        output_dir = "outputs"
+    )
 )
 
 #@title Show current memory stats

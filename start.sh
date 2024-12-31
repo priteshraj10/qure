@@ -4,7 +4,8 @@
 INSTALL_PATH="$(pwd)"
 MIN_DISK_SPACE_GB=10
 MIN_RAM_GB=8
-REQUIRED_PYTHON_VERSION="3.8"
+MIN_PYTHON_VERSION="3.8"
+MAX_PYTHON_VERSION="3.12"
 
 # Colors for output
 RED='\033[0;31m'
@@ -19,12 +20,38 @@ print_status() {
     echo -e "${color}${message}${NC}"
 }
 
+# Function to compare version numbers
+version_compare() {
+    echo "$@" | awk -F. '{ printf("%d%03d%03d%03d\n", $1,$2,$3,$4); }'
+}
+
+# Function to check Python version
+check_python_version() {
+    local python_version=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
+    local min_version=$MIN_PYTHON_VERSION
+    local max_version=$MAX_PYTHON_VERSION
+    
+    if [ $(version_compare $python_version) -lt $(version_compare $min_version) ]; then
+        print_status "$RED" "Error: Python version too old. Required: >= ${min_version} (found ${python_version})"
+        return 1
+    fi
+    
+    if [ $(version_compare $python_version) -gt $(version_compare $max_version) ]; then
+        print_status "$YELLOW" "Warning: Python version ${python_version} is newer than recommended ${max_version}"
+        print_status "$YELLOW" "Some packages might not be compatible. Continue? (y/n)"
+        read -r response
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
 # Function to check system requirements
 check_system_requirements() {
     # Check Python version
-    local python_version=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
-    if ! awk -v ver="$python_version" -v req="$REQUIRED_PYTHON_VERSION" 'BEGIN{exit(ver<req)}'; then
-        print_status "$RED" "Error: Python $REQUIRED_PYTHON_VERSION or higher required (found $python_version)"
+    if ! check_python_version; then
         return 1
     fi
 
